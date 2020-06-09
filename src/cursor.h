@@ -68,9 +68,6 @@ struct ParamInfo
     struct ParamInfo *nested;
     SQLLEN curTvpRow;
 
-    // For TVPs, the name of the table type.
-    SQLWCHAR* type_name;
-
     // Optional data.  If used, ParameterValuePtr will point into this.
     union
     {
