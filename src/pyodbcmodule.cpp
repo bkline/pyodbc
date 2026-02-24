@@ -574,9 +574,29 @@ static PyObject* mod_drivers(PyObject* self)
 }
 
 
-static PyObject* mod_datasources(PyObject* self)
+static PyObject* mod_datasources(PyObject* self, PyObject* args, PyObject* kwargs)
 {
     UNUSED(self);
+
+    static char* kwlist[] = { "scope", NULL };
+    const char* scope = NULL;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|$s", kwlist, &scope))
+        return 0;
+
+    SQLUSMALLINT nDirectionFirst;
+
+    if (scope == NULL)
+        nDirectionFirst = SQL_FETCH_FIRST;
+    else if (strcmp(scope, "user") == 0)
+        nDirectionFirst = SQL_FETCH_FIRST_USER;
+    else if (strcmp(scope, "system") == 0)
+        nDirectionFirst = SQL_FETCH_FIRST_SYSTEM;
+    else
+    {
+        PyErr_SetString(PyExc_ValueError, "scope must be 'user' or 'system'");
+        return 0;
+    }
 
     if (henv == SQL_NULL_HANDLE && !AllocateEnv())
         return 0;
@@ -597,7 +617,7 @@ static PyObject* mod_datasources(PyObject* self)
     SWORD cbDSN;
     SWORD cbDesc;
 
-    SQLUSMALLINT nDirection = SQL_FETCH_FIRST;
+    SQLUSMALLINT nDirection = nDirectionFirst;
 
     SQLRETURN ret;
 
@@ -768,9 +788,15 @@ static char drivers_doc[] =
     "Returns a list of installed drivers.";
 
 static char datasources_doc[] =
-    "dataSources() --> { DSN : Description }\n" \
+    "dataSources(*, scope=None) --> { DSN : Description }\n" \
     "\n" \
-    "Returns a dictionary mapping available DSNs to their descriptions.";
+    "Returns a dictionary mapping available DSNs to their descriptions.\n" \
+    "\n" \
+    "scope\n" \
+    "  An optional keyword-only argument to filter the returned DSNs.\n" \
+    "  If set to 'user', only user DSNs are returned.\n" \
+    "  If set to 'system', only system DSNs are returned.\n" \
+    "  If not set, all DSNs are returned.";
 
 static char setdecimalsep_doc[] =
     "setDecimalSeparator(string) -> None\n" \
@@ -792,7 +818,7 @@ static PyMethodDef pyodbc_methods[] =
     { "getDecimalSeparator", (PyCFunction)mod_getdecimalsep,      METH_NOARGS,               getdecimalsep_doc },
     { "TimestampFromTicks", (PyCFunction)mod_timestampfromticks, METH_VARARGS,               timestampfromticks_doc },
     { "drivers",            (PyCFunction)mod_drivers,            METH_NOARGS,                drivers_doc },
-    { "dataSources",        (PyCFunction)mod_datasources,        METH_NOARGS,                datasources_doc },
+    { "dataSources",        (PyCFunction)mod_datasources,        METH_VARARGS|METH_KEYWORDS, datasources_doc },
     { 0, 0, 0, 0 }
 };
 

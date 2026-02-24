@@ -945,9 +945,12 @@ class Row:
 
 # module functions
 
-def dataSources() -> dict[str, str]:
+def dataSources(*, scope: str | None = None) -> dict[str, str]:
     """Return all available Data Source Names (DSNs), typically from the odbcinst.ini file
     or the Windows ODBC Data Source Administrator.
+
+    Args:
+        scope: optional filter ("user" or "system") to control which DSNs are returned.
 
     Returns:
         A dictionary of DSNs and their textual descriptions.
