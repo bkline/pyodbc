@@ -725,6 +725,7 @@ PyObject* GetData(Cursor* cur, Py_ssize_t iCol)
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
+    case SQL_DB2_BLOB:
         return GetBinary(cur, iCol);
 
     case SQL_DECIMAL:
