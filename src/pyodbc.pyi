@@ -746,6 +746,23 @@ class Cursor:
         """
         ...
 
+    def tablesPrivileges(self,
+                         table: str | None = None,
+                         catalog: str | None = None,
+                         schema: str | None = None) -> Cursor:
+        """Return information about privileges granted for the tables in the
+        database.
+
+        Args:
+            table: Name of the database table.
+            catalog: Name of the catalog (database).
+            schema: Name of the table schema.
+
+        Returns:
+            The cursor object, containing table privilege info in the result set.
+        """
+        ...
+
     def columns(self,
                 table: str | None = None,
                 catalog: str | None = None,
