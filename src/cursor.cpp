@@ -602,6 +602,9 @@ int GetDiagRecs(Cursor* cur)
     if (!msg_list)
         return 0;
 
+    // See https://github.com/mkleehammer/pyodbc/issues/489
+    bool text_length_in_bytes = cur->cnxn->compat_diagrec_byte_length;
+
     for (;;)
     {
         cSQLState[0]    = 0;
@@ -617,6 +620,10 @@ int GetDiagRecs(Cursor* cur)
         Py_END_ALLOW_THREADS
         if (!SQL_SUCCEEDED(ret))
             break;
+
+        // Make sure the text length counts characters, not bytes.
+        if (text_length_in_bytes)
+            iTextLength /= sizeof(uint16_t);
 
         // If needed, allocate a bigger error message buffer and retry.
         if (iTextLength > iMessageLen - 1) {
@@ -634,6 +641,8 @@ int GetDiagRecs(Cursor* cur)
             Py_END_ALLOW_THREADS
             if (!SQL_SUCCEEDED(ret))
                 break;
+            if (text_length_in_bytes)
+                iTextLength /= sizeof(uint16_t);
         }
 
         cSQLState[5] = 0;  // Not always NULL terminated (MS Access)
@@ -1134,7 +1143,7 @@ static PyObject* Cursor_setinputsizes(PyObject* self, PyObject* sizes)
         PyErr_SetString(ProgrammingError, "Invalid cursor object.");
         return 0;
     }
-    
+
     Cursor *cur = (Cursor*)self;
     if (Py_None == sizes)
     {

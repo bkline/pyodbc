@@ -356,6 +356,18 @@ class Connection:
         ...
 
     @property
+    def compat_diagrec_byte_length(self) -> bool:
+        """Set to True if the driver incorrectly reports byte length instead of
+        character length for diagnostic messages.
+
+        See https://github.com/mkleehammer/pyodbc/issues/489."""
+        ...
+
+    @compat_diagrec_byte_length.setter
+    def compat_diagrec_byte_length(self, value: bool) -> None:
+        ...
+
+    @property
     def maxwrite(self) -> int:
         """The maximum bytes to write before using SQLPutData, default is zero for no maximum."""
         ...

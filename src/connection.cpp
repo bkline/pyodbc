@@ -250,6 +250,7 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeou
     cnxn->maxwrite     = 0;
     cnxn->timeout      = 0;
     cnxn->map_sqltype_to_converter = 0;
+    cnxn->compat_diagrec_byte_length = false;
 
     cnxn->attrs_before = attrs_before_o.Detach();
 
@@ -991,6 +992,22 @@ static int Connection_settimeout(PyObject* self, PyObject* value, void* closure)
     return 0;
 }
 
+static PyObject* Connection_getcompat_diagrec_byte_length(PyObject* self, void* closure)
+{
+    return PyBool_FromLong(((Connection*)self)->compat_diagrec_byte_length);
+}
+
+static int Connection_setcompat_diagrec_byte_length(PyObject* self, PyObject* value, void* closure)
+{
+    if (!PyBool_Check(value))
+    {
+        PyErr_SetString(PyExc_TypeError, "compat_diagrec_byte_length must be a bool");
+        return -1;
+    }
+    ((Connection*)self)->compat_diagrec_byte_length = (value == Py_True);
+    return 0;
+}
+
 static bool _remove_converter(PyObject* self, SQLSMALLINT sqltype)
 {
     Connection* cnxn = (Connection*)self;
@@ -1394,6 +1411,8 @@ static PyGetSetDef Connection_getseters[] = {
     { "timeout", Connection_gettimeout, Connection_settimeout,
       "The timeout in seconds, zero means no timeout.", 0 },
     { "maxwrite", Connection_getmaxwrite, Connection_setmaxwrite, "The maximum bytes to write before using SQLPutData.", 0 },
+    { "compat_diagrec_byte_length", Connection_getcompat_diagrec_byte_length, Connection_setcompat_diagrec_byte_length,
+      "If True, the driver reports byte length instead of character length in SQLGetDiagRecW().", 0 },
     { 0 }
 };
 
