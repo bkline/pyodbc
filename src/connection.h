@@ -42,6 +42,12 @@ struct Connection
     // The column size of datetime columns, obtained from SQLGetInfo(), used to determine the datetime precision.
     int datetime_precision;
 
+    // Initial buffer allocation size for ReadVarColumn
+    // Any integer greater than 0 overrides the default value of 4096
+    // < 1 means use columnSize * cbElement + cbNullTeminator from the column descriptor,
+    // up to a ceiling of 32 MB. See https://github.com/mkleehammer/pyodbc/issues/1071.
+    Py_ssize_t readvar_initsize;
+
     // The connection timeout in seconds.
     long timeout;
 

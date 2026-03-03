@@ -93,8 +93,32 @@ static bool ReadVarColumn(Cursor* cur, Py_ssize_t iCol, SQLSMALLINT ctype, bool&
     const Py_ssize_t cbElement = (Py_ssize_t)(IsWideType(ctype) ? sizeof(uint16_t) : 1);
     const Py_ssize_t cbNullTerminator = IsBinaryType(ctype) ? 0 : cbElement;
 
-    // TODO: Make the initial allocation size configurable?
-    Py_ssize_t cbAllocated = 4096;
+    Py_ssize_t cbAllocated;
+    Py_ssize_t initsize = cur->cnxn->readvar_initsize;
+    if (initsize == 0)
+    {
+        // Use the column size from the descriptor so that a single SQLGetData
+        // call can return all data at once — required to work around Oracle BI
+        // ODBC drivers that loop forever when the buffer is smaller than the
+        // column's total data size.
+        Py_ssize_t columnSize = (Py_ssize_t)cur->colinfos[iCol].column_size;
+
+        // columnSize is in characters for wide types, bytes for narrow.
+        // Multiply by cbElement to get bytes, add room for the null terminator.
+        cbAllocated = columnSize * cbElement + cbNullTerminator;
+
+        // Clamp to something sane: if the driver reported 0 or an absurd value,
+        // fall back to a reasonable ceiling rather than allocating nothing or
+        // gigabytes blindly.
+        Py_ssize_t ceiling = 32 * 1024 * 1024;
+        if (cbAllocated <= 0 || cbAllocated > ceiling)
+            cbAllocated = ceiling;
+    }
+    else
+    {
+        cbAllocated = initsize;
+    }
+
     Py_ssize_t cbUsed = 0;
     byte* pb = (byte*)PyMem_Malloc((size_t)cbAllocated);
     if (!pb)
@@ -143,7 +167,7 @@ static bool ReadVarColumn(Cursor* cur, Py_ssize_t iCol, SQLSMALLINT ctype, bool&
         if (ret == SQL_SUCCESS_WITH_INFO)
         {
             // This means we read some data, but there is more.  SQLGetData is very weird - it
-            // sets cbRead to the number of bytes we read *plus* the amount remaining.
+            // sets cbData to the number of bytes we read *plus* the amount remaining.
 
             Py_ssize_t cbRemaining = 0; // How many more bytes do we need to allocate, not including null?
             Py_ssize_t cbRead = 0; // How much did we just read, not including null?

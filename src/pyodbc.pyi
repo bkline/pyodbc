@@ -365,6 +365,15 @@ class Connection:
         ...
 
     @property
+    def readvar_initsize(self) -> int:
+        """The initial buffer size in bytes for reading values from variable-length columns."""
+        ...
+
+    @readvar_initsize.setter
+    def readvar_initsize(self, value: int) -> None:
+        ...
+
+    @property
     def searchescape(self) -> str:
         """The character for escaping search pattern characters like "%" and "_".
         This is typically the backslash character but can be driver-specific."""

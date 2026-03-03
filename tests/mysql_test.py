@@ -67,17 +67,20 @@ def test_blob(cursor: pyodbc.Cursor):
 
 
 def _test_vartype(cursor, datatype):
+    assert cursor.connection.readvar_initsize == 4096
     cursor.execute(f"create table t1(c1 {datatype}(4000))")
+    for initsize in [None, 1024 * 1024, 0]:
+        if initsize is not None:
+            cursor.connection.readvar_initsize = initsize
+        for length in [None, 0, 100, 1000, 4000]:
+            cursor.execute("delete from t1")
 
-    for length in [None, 0, 100, 1000, 4000]:
-        cursor.execute("delete from t1")
+            encoding = (datatype in ('blob', 'varbinary')) and 'utf8' or None
+            value = _generate_str(length, encoding=encoding)
 
-        encoding = (datatype in ('blob', 'varbinary')) and 'utf8' or None
-        value = _generate_str(length, encoding=encoding)
-
-        cursor.execute("insert into t1 values(?)", value)
-        v = cursor.execute("select * from t1").fetchone()[0]
-        assert v == value
+            cursor.execute("insert into t1 values(?)", value)
+            v = cursor.execute("select * from t1").fetchone()[0]
+            assert v == value
 
 
 def test_char(cursor: pyodbc.Cursor):

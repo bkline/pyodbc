@@ -223,31 +223,37 @@ LARGE_FENCEPOST_SIZES = SMALL_FENCEPOST_SIZES + [4095, 4096, 4097, 10 * 1024, 20
 
 def _test_vartype(cursor: pyodbc.Cursor, datatype):
 
-    if datatype == 'text':
-        lengths = LARGE_FENCEPOST_SIZES
-    else:
-        lengths = SMALL_FENCEPOST_SIZES
+    assert cursor.connection.readvar_initsize == 4096
+    for initsize in (None, 1024 * 1024, 0):
+        if initsize is not None:
+            cursor.connection.readvar_initsize = initsize
+        if datatype == 'text':
+            lengths = LARGE_FENCEPOST_SIZES
+        else:
+            lengths = SMALL_FENCEPOST_SIZES
 
-    if datatype == 'text':
-        cursor.execute(f"create table t1(c1 {datatype})")
-    else:
-        maxlen = lengths[-1]
-        cursor.execute(f"create table t1(c1 {datatype}({maxlen}))")
+        if datatype == 'text':
+            cursor.execute(f"create table t1(c1 {datatype})")
+        else:
+            maxlen = lengths[-1]
+            cursor.execute(f"create table t1(c1 {datatype}({maxlen}))")
 
-    for length in lengths:
-        cursor.execute("delete from t1")
+        for length in lengths:
+            cursor.execute("delete from t1")
 
-        encoding = 'utf8' if datatype in {'blob', 'varbinary'} else None
-        value = _generate_str(length, encoding=encoding)
+            encoding = 'utf8' if datatype in {'blob', 'varbinary'} else None
+            value = _generate_str(length, encoding=encoding)
 
-        try:
-            cursor.execute("insert into t1 values(?)", value)
-        except pyodbc.Error as ex:
-            msg = f'{datatype} insert failed: length={length} len={len(value)}'
-            raise Exception(msg) from ex
+            try:
+                cursor.execute("insert into t1 values(?)", value)
+            except pyodbc.Error as ex:
+                msg = f'{datatype} insert failed: length={length} len={len(value)}'
+                raise Exception(msg) from ex
 
-        v = cursor.execute("select * from t1").fetchone()[0]
-        assert v == value
+            v = cursor.execute("select * from t1").fetchone()[0]
+            assert v == value
+
+        cursor.execute("drop table t1")
 
 
 def _test_scalar(cursor: pyodbc.Cursor, datatype, values):

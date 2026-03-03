@@ -62,15 +62,19 @@ def _generate_str(length, encoding=None):
 
 def test_text(cursor: pyodbc.Cursor):
     cursor.execute("create table t1(col text)")
+    assert cursor.connection.readvar_initsize == 4096
 
     # Two different read code paths exist based on the length.  Using 100 and 4000 will ensure
     # both are tested.
-    for length in [None, 0, 100, 1000, 4000]:
-        cursor.execute("truncate table t1")
-        param = _generate_str(length)
-        cursor.execute("insert into t1 values (?)", param)
-        result = cursor.execute("select col from t1").fetchval()
-        assert result == param
+    for initsize in [None, 1024 * 1024, 0]:
+        if initsize is not None:
+            cursor.connection.readvar_initsize = initsize
+        for length in [None, 0, 100, 1000, 4000]:
+            cursor.execute("truncate table t1")
+            param = _generate_str(length)
+            cursor.execute("insert into t1 values (?)", param)
+            result = cursor.execute("select col from t1").fetchval()
+            assert result == param
 
 
 def test_text_many(cursor: pyodbc.Cursor):

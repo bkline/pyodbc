@@ -138,31 +138,36 @@ def _test_strtype(cursor: pyodbc.Cursor, sqltype, value, colsize=None):
     The implementation for string, Unicode, and binary tests.
     """
     assert colsize is None or (value is None or colsize >= len(value))
+    assert cursor.connection.readvar_initsize == 4096
 
-    if colsize:
-        sql = "create table t1(s {}({}))".format(sqltype, colsize)
-    else:
-        sql = "create table t1(s {})".format(sqltype)
+    for initsize in [None, 1024 * 1024, 0]:
+        if initsize is not None:
+            cursor.connection.readvar_initsize = initsize
+        if colsize:
+            sql = "create table t1(s {}({}))".format(sqltype, colsize)
+        else:
+            sql = "create table t1(s {})".format(sqltype)
 
-    cursor.execute(sql)
-    cursor.execute("insert into t1 values(?)", value)
-    v = cursor.execute("select * from t1").fetchone()[0]
-    assert type(v) is type(value)
+        cursor.execute(sql)
+        cursor.execute("insert into t1 values(?)", value)
+        v = cursor.execute("select * from t1").fetchone()[0]
+        assert type(v) is type(value)
 
-    if value is not None:
-        assert len(v) == len(value)
+        if value is not None:
+            assert len(v) == len(value)
 
-    assert v == value
+        assert v == value
 
-    # Reported by Andy Hochhaus in the pyodbc group: In 2.1.7 and earlier, a hardcoded length of 255 was used to
-    # determine whether a parameter was bound as a SQL_VARCHAR or SQL_LONGVARCHAR.  Apparently SQL Server chokes if
-    # we bind as a SQL_LONGVARCHAR and the target column size is 8000 or less, which is considers just SQL_VARCHAR.
-    # This means binding a 256 character value would cause problems if compared with a VARCHAR column under
-    # 8001. We now use SQLGetTypeInfo to determine the time to switch.
-    #
-    # [42000] [Microsoft][SQL Server Native Client 10.0][SQL Server]The data types varchar and text are incompatible in the equal to operator.
+        # Reported by Andy Hochhaus in the pyodbc group: In 2.1.7 and earlier, a hardcoded length of 255 was used to
+        # determine whether a parameter was bound as a SQL_VARCHAR or SQL_LONGVARCHAR.  Apparently SQL Server chokes if
+        # we bind as a SQL_LONGVARCHAR and the target column size is 8000 or less, which is considers just SQL_VARCHAR.
+        # This means binding a 256 character value would cause problems if compared with a VARCHAR column under
+        # 8001. We now use SQLGetTypeInfo to determine the time to switch.
+        #
+        # [42000] [Microsoft][SQL Server Native Client 10.0][SQL Server]The data types varchar and text are incompatible in the equal to operator.
 
-    cursor.execute("select * from t1 where s=?", value)
+        cursor.execute("select * from t1 where s=?", value)
+        cursor.execute("drop table t1")
 
 
 def _test_strliketype(cursor: pyodbc.Cursor, sqltype, value, colsize=None):
