@@ -1700,3 +1700,15 @@ def _generate_str(length, encoding=None):
     v = v[:length]
 
     return v
+
+
+def test_set_string_attr(cursor: pyodbc.Cursor):
+    """Confirm that set_attr() now accepts string values.
+
+    See https://github.com/mkleehammer/pyodbc/issues/505
+    """
+    original_db = cursor.execute("SELECT db_name()").fetchval()
+    assert original_db != "master"
+    cursor.connection.set_attr(pyodbc.SQL_ATTR_CURRENT_CATALOG, "master")
+    new_db = cursor.execute("SELECT db_name()").fetchval()
+    assert new_db == "master"

@@ -351,25 +351,44 @@ static char set_attr_doc[] =
     "attr_id\n"
     "  The attribute id (integer) to set.  These are ODBC or driver constants.\n\n"
     "value\n"
-    "  An integer value.\n\n"
-    "At this time, only integer values are supported and are always passed as SQLUINTEGER.";
+    "  An integer or string value.";
 
 static PyObject* Connection_set_attr(PyObject* self, PyObject* args)
 {
     int id;
-    int value;
-    if (!PyArg_ParseTuple(args, "ii", &id, &value))
+    PyObject* value;
+    if (!PyArg_ParseTuple(args, "iO", &id, &value))
         return 0;
 
     Connection* cnxn = (Connection*)self;
 
     SQLRETURN ret;
-    Py_BEGIN_ALLOW_THREADS
-    ret = SQLSetConnectAttr(cnxn->hdbc, id, (SQLPOINTER)(intptr_t)value, SQL_IS_INTEGER);
-    Py_END_ALLOW_THREADS
+    SQLWChar sqlchar;  // declared here so buffer stays alive across the call
+
+    if (PyLong_Check(value))
+    {
+        long ival = PyLong_AsLong(value);
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLSetConnectAttrW(cnxn->hdbc, id, (SQLPOINTER)(intptr_t)ival, SQL_IS_INTEGER);
+        Py_END_ALLOW_THREADS
+    }
+    else if (PyUnicode_Check(value))
+    {
+        sqlchar.set(value, "utf-16le");
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLSetConnectAttrW(cnxn->hdbc, id, sqlchar.get(), SQL_NTS);
+        Py_END_ALLOW_THREADS
+    }
+    else
+    {
+        PyErr_Format(PyExc_TypeError, "set_attr value must be a string or integer, not '%s'",
+                     Py_TYPE(value)->tp_name);
+        return 0;
+    }
 
     if (!SQL_SUCCEEDED(ret))
         return RaiseErrorFromHandle(cnxn, "SQLSetConnectAttr", cnxn->hdbc, SQL_NULL_HANDLE);
+
     Py_RETURN_NONE;
 }
 

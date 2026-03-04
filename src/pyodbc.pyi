@@ -427,7 +427,7 @@ class Connection:
         """
         ...
 
-    def set_attr(self, attr_id: int, value: int, /) -> None:
+    def set_attr(self, attr_id: int, value: int | str, /) -> None:
         """Set an attribute on the connection, via SQLSetConnectAttr.
 
         Args:
