@@ -1098,6 +1098,12 @@ def test_cursor_messages_with_print(cursor: pyodbc.Cursor):
     assert len(messages) == 1
     assert messages[0][1].endswith(msg)
 
+    # Confirm that the PRINT message is captured when DAE kicks in.
+    # https://github.com/mkleehammer/pyodbc/issues/1140
+    cursor.execute("PRINT 'HI!'; SELECT ?", "x" * 2001)
+    assert len(cursor.messages) == 1
+    assert cursor.messages[0][1].endswith("HI!")
+
 
 def test_cursor_messages_with_fast_executemany(cursor: pyodbc.Cursor):
     """

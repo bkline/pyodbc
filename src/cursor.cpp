@@ -901,6 +901,9 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
         }
     }
 
+    if (ret == SQL_SUCCESS_WITH_INFO)
+        GetDiagRecs(cur);
+
     FreeParameterData(cur);
 
     if (ret == SQL_NO_DATA)
@@ -1134,7 +1137,7 @@ static PyObject* Cursor_setinputsizes(PyObject* self, PyObject* sizes)
         PyErr_SetString(ProgrammingError, "Invalid cursor object.");
         return 0;
     }
-    
+
     Cursor *cur = (Cursor*)self;
     if (Py_None == sizes)
     {
