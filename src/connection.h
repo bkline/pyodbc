@@ -39,6 +39,9 @@ struct Connection
     // to insert NULLs into binary columns.
     bool supports_describeparam;
 
+    // Set to true if the driver doesn't handle SQL_NUMERIC_STRUCT properly.
+    bool fetch_decimal_as_string;
+
     // The column size of datetime columns, obtained from SQLGetInfo(), used to determine the datetime precision.
     int datetime_precision;
 

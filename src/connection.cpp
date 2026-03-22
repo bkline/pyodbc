@@ -252,6 +252,7 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeou
     cnxn->map_sqltype_to_converter = 0;
 
     cnxn->attrs_before = attrs_before_o.Detach();
+    cnxn->fetch_decimal_as_string = false;
 
     // This is an inefficient default, but should work all the time.  When we are offered
     // single-byte text we don't actually know what the encoding is.  For example, with SQL
@@ -991,6 +992,37 @@ static int Connection_settimeout(PyObject* self, PyObject* value, void* closure)
     return 0;
 }
 
+static PyObject* Connection_getfetchdecimalasstring(PyObject* self, void* closure)
+{
+    UNUSED(closure);
+
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return 0;
+
+    PyObject* result = cnxn->fetch_decimal_as_string ? Py_True : Py_False;
+    Py_INCREF(result);
+    return result;
+}
+
+static int Connection_setfetchdecimalasstring(PyObject* self, PyObject* value, void* closure)
+{
+    UNUSED(closure);
+
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return -1;
+
+    if (value == 0)
+    {
+        PyErr_SetString(PyExc_TypeError, "Cannot delete the fetch_decimal_as_string attribute.");
+        return -1;
+    }
+
+    cnxn->fetch_decimal_as_string = PyObject_IsTrue(value);
+    return 0;
+}
+
 static bool _remove_converter(PyObject* self, SQLSMALLINT sqltype)
 {
     Connection* cnxn = (Connection*)self;
@@ -1394,6 +1426,10 @@ static PyGetSetDef Connection_getseters[] = {
     { "timeout", Connection_gettimeout, Connection_settimeout,
       "The timeout in seconds, zero means no timeout.", 0 },
     { "maxwrite", Connection_getmaxwrite, Connection_setmaxwrite, "The maximum bytes to write before using SQLPutData.", 0 },
+    { "fetch_decimal_as_string", Connection_getfetchdecimalasstring, Connection_setfetchdecimalasstring,
+      "If True, DECIMAL and NUMERIC values are fetched as strings using the legacy\n"
+      "locale-aware path.  If False (the default), values are fetched using a binary\n"
+      "representation that is not affected by the locale.", 0 },
     { 0 }
 };
 

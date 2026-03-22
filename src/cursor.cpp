@@ -543,6 +543,53 @@ bool InitColumnInfo(Cursor* cursor, SQLUSMALLINT iCol, ColumnInfo* pinfo)
         pinfo->is_unsigned = false;
     }
 
+    // For a NUMERIC column, determine how we will fetch the values.
+    pinfo->scale = DecimalDigits;
+    pinfo->use_decimal_binary = false;
+    switch (pinfo->sql_type)
+    {
+    case SQL_DECIMAL:
+    case SQL_NUMERIC:
+    case SQL_DB2_DECFLOAT:
+
+        // It is puzzling that ODBC abandons support for scale values between 128 and 255
+        // by using a signed byte so that it can support negative scale values, even though
+        // the SQL standard only allows values between zero and precision. Not many databases
+        // support negative scale. PostgreSQL is one, and its ODBC driver currently (version
+        // 17.00.0007) reports that scale is 2046 for SELECT CAST('1234500' AS NUMERIC(10,-2))
+        // which doesn't make much sense (to me, anyway). So I'm going to follow the lead of
+        // the SQL standard and fall back on fetching the value from the driver as a string
+        // when scale does not fall in the range 0..127.
+        if (!cursor->cnxn->fetch_decimal_as_string && pinfo->scale >= 0 && pinfo->scale <= 127)
+        {
+            // Set up the ARD once for this column so SQLGetData fills a SQL_NUMERIC_STRUCT.
+            // These settings persist for all rows on this statement handle.
+            SQLHDESC hDesc = NULL;
+            SQLRETURN descRet;
+
+            Py_BEGIN_ALLOW_THREADS
+            descRet = SQLGetStmtAttr(cursor->hstmt, SQL_ATTR_APP_ROW_DESC, &hDesc, 0, NULL);
+            Py_END_ALLOW_THREADS
+
+            if (SQL_SUCCEEDED(descRet))
+            {
+                SQLULEN precision = pinfo->column_size;
+                SQLSMALLINT scale = pinfo->scale;
+                SQLSMALLINT i = (SQLSMALLINT)iCol;
+
+                Py_BEGIN_ALLOW_THREADS
+                // SQL_DESC_TYPE must be set first.
+                descRet =
+                    SQLSetDescField(hDesc, i, SQL_DESC_TYPE, (void*)SQL_C_NUMERIC, 0) == SQL_SUCCESS &&
+                    SQLSetDescField(hDesc, i, SQL_DESC_PRECISION, (void*)precision, 0) == SQL_SUCCESS &&
+                    SQLSetDescField(hDesc, i, SQL_DESC_SCALE, (void*)scale, 0) == SQL_SUCCESS
+                    ? SQL_SUCCESS : SQL_ERROR;
+                Py_END_ALLOW_THREADS
+
+                pinfo->use_decimal_binary = SQL_SUCCEEDED(descRet);
+            }
+        }
+    }
     return true;
 }
 
@@ -1134,7 +1181,7 @@ static PyObject* Cursor_setinputsizes(PyObject* self, PyObject* sizes)
         PyErr_SetString(ProgrammingError, "Invalid cursor object.");
         return 0;
     }
-    
+
     Cursor *cur = (Cursor*)self;
     if (Py_None == sizes)
     {

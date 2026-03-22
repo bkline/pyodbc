@@ -357,29 +357,31 @@ def test_bit(cursor: pyodbc.Cursor):
 def test_decimal(cursor: pyodbc.Cursor):
     # From test provided by planders (thanks!) in Issue 91
 
-    for (precision, scale, negative) in [
-            (1, 0, False), (1, 0, True), (6, 0, False), (6, 2, False), (6, 4, True),
-            (6, 6, True), (38, 0, False), (38, 10, False), (38, 38, False), (38, 0, True),
-            (38, 10, True), (38, 38, True)]:
+    for mode in (True, False):
+        for (precision, scale, negative) in [
+                (1, 0, False), (1, 0, True), (6, 0, False), (6, 2, False),
+                (6, 4, True), (6, 6, True), (38, 0, False), (38, 10, False),
+                (38, 38, False), (38, 0, True), (38, 10, True), (38, 38, True)]:
 
-        try:
-            cursor.execute("drop table t1")
-        except Exception:
-            pass
+            cursor.connection.fetch_decimal_as_string = mode
+            try:
+                cursor.execute("drop table t1")
+            except Exception:
+                pass
 
-        cursor.execute(f"create table t1(d decimal({precision}, {scale}))")
+            cursor.execute(f"create table t1(d decimal({precision}, {scale}))")
 
-        # Construct a decimal that uses the maximum precision and scale.
-        sign   = negative and '-' or ''
-        before = '9' * (precision - scale)
-        after  = scale and ('.' + '9' * scale) or ''
-        decStr = f'{sign}{before}{after}'
-        value = Decimal(decStr)
+            # Construct a decimal that uses the maximum precision and scale.
+            sign   = negative and '-' or ''
+            before = '9' * (precision - scale)
+            after  = scale and ('.' + '9' * scale) or ''
+            decStr = f'{sign}{before}{after}'
+            value = Decimal(decStr)
 
-        cursor.execute("insert into t1 values(?)", value)
+            cursor.execute("insert into t1 values(?)", value)
 
-        v = cursor.execute("select d from t1").fetchone()[0]
-        assert v == value
+            v = cursor.execute("select d from t1").fetchval()
+            assert v == value
 
 
 def test_decimal_e(cursor: pyodbc.Cursor):

@@ -117,13 +117,15 @@ def test_decimal(cursor: pyodbc.Cursor):
         ('-10.0010', '19,4')
     ]
 
-    for value, prec in tests:
-        value = Decimal(value)
-        cursor.execute("drop table if exists t1")
-        cursor.execute(f"create table t1(c1 numeric({prec}))")
-        cursor.execute("insert into t1 values (?)", value)
-        v = cursor.execute("select c1 from t1").fetchone()[0]
-        assert v == value
+    for mode in (True, False):
+        cursor.connection.fetch_decimal_as_string = mode
+        for value, prec in tests:
+            value = Decimal(value)
+            cursor.execute("drop table if exists t1")
+            cursor.execute(f"create table t1(c1 numeric({prec}))")
+            cursor.execute("insert into t1 values (?)", value)
+            v = cursor.execute("select c1 from t1").fetchone()[0]
+            assert v == value
 
 
 def test_multiple_bindings(cursor: pyodbc.Cursor):

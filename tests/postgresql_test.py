@@ -167,11 +167,13 @@ def test_decimal(cursor: pyodbc.Cursor):
     params = [Decimal(n) for n in "-1000.10 -1234.56 -1 0 1 1000.10 1234.56 100010 123456789.21".split()]
     params.append(None)
 
-    for param in params:
-        cursor.execute("truncate table t1")
-        cursor.execute("insert into t1 values (?)", param)
-        result = cursor.execute("select col from t1").fetchval()
-        assert result == param
+    for mode in (True, False):
+        cursor.connection.fetch_decimal_as_string = mode
+        for param in params:
+            cursor.execute("truncate table t1")
+            cursor.execute("insert into t1 values (?)", param)
+            result = cursor.execute("select col from t1").fetchval()
+            assert result == param
 
 
 def test_numeric(cursor: pyodbc.Cursor):
@@ -181,11 +183,13 @@ def test_numeric(cursor: pyodbc.Cursor):
     params = [Decimal(n) for n in "-1234.56  -1  0  1  1234.56  123456789.21".split()]
     params.append(None)
 
-    for param in params:
-        cursor.execute("truncate table t1")
-        cursor.execute("insert into t1 values (?)", param)
-        result = cursor.execute("select col from t1").fetchval()
-        assert result == param
+    for mode in (True, False):
+        cursor.connection.fetch_decimal_as_string = mode
+        for param in params:
+            cursor.execute("truncate table t1")
+            cursor.execute("insert into t1 values (?)", param)
+            result = cursor.execute("select col from t1").fetchval()
+            assert result == param
 
 
 def test_maxwrite(cursor: pyodbc.Cursor):
