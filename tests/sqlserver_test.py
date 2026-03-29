@@ -32,8 +32,8 @@ def connect(autocommit=False, attrs_before=None):
 
 
 DRIVER = connect().getinfo(pyodbc.SQL_DRIVER_NAME)
-
-IS_FREEDTS   = bool(re.search(r'tsodbc', DRIVER, flags=re.IGNORECASE))
+DRIVER_VERSION = tuple(int(n) for n in connect().getinfo(pyodbc.SQL_DRIVER_VER).split("."))
+IS_FREETDS   = bool(re.search(r'(tsodbc|tdsodbc)', DRIVER, flags=re.IGNORECASE))
 IS_MSODBCSQL = bool(re.search(r'(msodbcsql|sqlncli|sqlsrv32\.dll)', DRIVER, re.IGNORECASE))
 
 
@@ -135,6 +135,14 @@ def test_non_numeric_float(cursor: pyodbc.Cursor):
     for value in (float('+Infinity'), float('-Infinity'), float('NaN')):
         with pytest.raises(pyodbc.ProgrammingError):
             cursor.execute("insert into t1 values (?)", value)
+    if IS_FREETDS:
+        # Give the driver a chance to unconfuse itself. Without creating and closing
+        # this second connection, this test will pass, but the next test in the queue
+        # depending on the cursor-generator fixture will fail when that fixture tries
+        # to commit the "DROP TABLE IF EXISTS…" statements, triggering an exception.
+        # For details refer to https://github.com/FreeTDS/freetds/issues/718.
+        conn2 = connect()
+        conn2.close()
 
 
 def test_drivers():
@@ -223,6 +231,9 @@ LARGE_FENCEPOST_SIZES = SMALL_FENCEPOST_SIZES + [4095, 4096, 4097, 10 * 1024, 20
 
 def _test_vartype(cursor: pyodbc.Cursor, datatype):
 
+    is_binary = datatype in {"blob", "varbinary"}
+    encoding = "utf8" if is_binary else None
+
     if datatype == 'text':
         lengths = LARGE_FENCEPOST_SIZES
     else:
@@ -235,15 +246,26 @@ def _test_vartype(cursor: pyodbc.Cursor, datatype):
         cursor.execute(f"create table t1(c1 {datatype}({maxlen}))")
 
     for length in lengths:
+
+        # FreeTDS did not support SQLDescribeParam until version 1.5.16 (see ticket
+        # https://github.com/FreeTDS/freetds/issues/104), so pyodbc had to infer the
+        # SQL type from the Python value. None carries no type information, causing
+        # pyodbc to fall back to SQL_VARCHAR, which SQL Server rejects for binary
+        # columns.
+        if length is None and IS_FREETDS and is_binary and DRIVER_VERSION < (1, 5, 16):
+            continue
+
         cursor.execute("delete from t1")
 
-        encoding = 'utf8' if datatype in {'blob', 'varbinary'} else None
         value = _generate_str(length, encoding=encoding)
 
         try:
             cursor.execute("insert into t1 values(?)", value)
         except pyodbc.Error as ex:
-            msg = f'{datatype} insert failed: length={length} len={len(value)}'
+            if value is None:
+                msg = f"{datatype} insert of NULL failed"
+            else:
+                msg = f'{datatype} insert failed: length={length} len={len(value)}'
             raise Exception(msg) from ex
 
         v = cursor.execute("select * from t1").fetchone()[0]
@@ -314,7 +336,7 @@ def test_nextset(cursor: pyodbc.Cursor):
         assert i + 2 == row.i
 
 
-@pytest.mark.skipif(IS_FREEDTS, reason='https://github.com/FreeTDS/freetds/issues/230')
+@pytest.mark.skipif(IS_FREETDS, reason='https://github.com/FreeTDS/freetds/issues/230')
 def test_nextset_with_raiserror(cursor: pyodbc.Cursor):
     cursor.execute("select i = 1; RAISERROR('c', 16, 1);")
     row = next(cursor)
@@ -674,7 +696,11 @@ def test_sp_with_none(cursor: pyodbc.Cursor):
 
 
 def test_rowcount_delete(cursor: pyodbc.Cursor):
-    assert cursor.rowcount == -1
+    # After DDL (DROP TABLE), rowcount is driver-defined per the ODBC spec.
+    # Microsoft's driver might reliably return -1 here, but that's not true
+    # for FreeTDS.
+    if IS_MSODBCSQL:
+        assert cursor.rowcount == -1
     cursor.execute("create table t1(i int)")
     count = 4
     for i in range(count):
@@ -726,7 +752,7 @@ def test_rowcount_reset(cursor: pyodbc.Cursor):
     assert cursor.rowcount == 1
 
     cursor.execute("create table t2(i int)")
-    ddl_rowcount = (0 if IS_FREEDTS else -1)
+    ddl_rowcount = (0 if IS_FREETDS else -1)
     assert cursor.rowcount == ddl_rowcount
 
 
@@ -1098,7 +1124,8 @@ def test_cursor_messages_with_print(cursor: pyodbc.Cursor):
     assert len(messages) == 1
     assert messages[0][1].endswith(msg)
 
-
+@pytest.mark.skipif(IS_FREETDS and DRIVER_VERSION < (1, 5, 15),
+                    reason="FreeTDS ignores bind offset")
 def test_cursor_messages_with_fast_executemany(cursor: pyodbc.Cursor):
     """
     Ensure the Cursor.messages attribute is set with fast_executemany=True.
@@ -1189,7 +1216,7 @@ def test_none_param(cursor: pyodbc.Cursor):
     try:
         cursor.execute(sql, 2, None)
     except pyodbc.DataError:
-        if IS_FREEDTS:
+        if IS_FREETDS:
             # cnxn.getinfo(pyodbc.SQL_DESCRIBE_PARAMETER) returns False for FreeTDS, so pyodbc
             # can't call SQLDescribeParam to get the correct parameter type.  This can lead to
             # errors being returned from SQL Server when sp_prepexec is called, e.g., "Implicit
@@ -1608,12 +1635,12 @@ def _test_tvp(cursor: pyodbc.Cursor, diff_schema):
     assert result_array == params
 
 
-@pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
+@pytest.mark.skipif(IS_FREETDS, reason='FreeTDS does not support TVP')
 def test_tvp(cursor: pyodbc.Cursor):
     _test_tvp(cursor, False)
 
 
-@pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
+@pytest.mark.skipif(IS_FREETDS, reason='FreeTDS does not support TVP')
 def test_tvp_diffschema(cursor: pyodbc.Cursor):
     _test_tvp(cursor, True)
 
