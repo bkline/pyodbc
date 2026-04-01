@@ -269,27 +269,34 @@ def test_noscan(cursor: pyodbc.Cursor):
 
 
 def test_nonnative_uuid(cursor: pyodbc.Cursor):
-    # The default is False meaning we should return a string.  Note that
-    # SQL Server seems to always return uppercase.
+    # Resetting the native_uuid flag should force return of a text value.
+    # Note that SQL Server seems to always return uppercase.
     value = uuid.uuid4()
     cursor.execute("create table t1(n uniqueidentifier)")
     cursor.execute("insert into t1 values (?)", value)
 
-    pyodbc.native_uuid = False
-    result = cursor.execute("select n from t1").fetchval()
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = False
+        result = cursor.execute("select n from t1").fetchval()
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
     assert isinstance(result, str)
     assert result == str(value).upper()
-    pyodbc.native_uuid = True
 
 
 def test_native_uuid(cursor: pyodbc.Cursor):
-    # When true, we should return a uuid.UUID object.
+    # With the native_uuid flag set we should get a uuid.UUID object.
     value = uuid.uuid4()
     cursor.execute("create table t1(n uniqueidentifier)")
     cursor.execute("insert into t1 values (?)", value)
 
-    pyodbc.native_uuid = True
-    result = cursor.execute("select n from t1").fetchval()
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = True
+        result = cursor.execute("select n from t1").fetchval()
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
     assert isinstance(result, uuid.UUID)
     assert value == result
 
@@ -1488,9 +1495,6 @@ def _test_tvp(cursor: pyodbc.Cursor, diff_schema):
     # to define a wrapper pyodbc.TVP or pyodbc.Table object, similar to the DB APIs `Binary`
     # object.
 
-    pyodbc.native_uuid = True
-    # This is the default, but we'll reset it in case a previous test fails to.
-
     procname = 'SelectTVP'
     typename = 'TestTVP'
 
@@ -1586,7 +1590,13 @@ def _test_tvp(cursor: pyodbc.Cursor, diff_schema):
         p1 = [[typenameonly, schemaname] + params]
     else:
         p1 = [params]
-    result_array = [tuple(row) for row in cursor.execute(f"exec {procname} ?", p1).fetchall()]
+
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = True
+        result_array = [tuple(row) for row in cursor.execute(f"exec {procname} ?", p1).fetchall()]
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
 
     # The values make it very difficult to troubleshoot if something is wrong, so instead of
     # asserting they are the same, we'll walk them if there is a problem to identify which is
@@ -1637,8 +1647,15 @@ def test_sql_variant(cursor: pyodbc.Cursor):
         "insert into t1 values (CAST('0592b437-745f-4b2c-a997-97022c624cf6' AS UNIQUEIDENTIFIER))"
     )
 
-    # select all of the values we inserted and ensure they have the correct types
-    results = [record[0] for record in cursor.execute("select a from t1").fetchall()]
+    # Expected behavior depends on this flag being set.
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = True
+        results = [record[0] for record in cursor.execute("select a from t1").fetchall()]
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
+
+    # Ensure all of the fetched values have the expected types.
     for index, assertion_tuple in enumerate(
         [
             (Decimal, Decimal("456.7")),
