@@ -1553,7 +1553,8 @@ def _test_tvp(cursor: pyodbc.Cursor, diff_schema):
     very_long_bytearray = long_bytearray * (VERY_LONG_LEN // len(long_bytearray))
 
     params = [
-        # Three rows with all of the types in the table defined above.
+        # Four rows with all of the types in the table defined above.
+        (None, None, None, None, None, None, None, None, None, None, None, None),
         (
             'abc', 'abc',
             bytes([0xD1, 0xCE, 0xFA, 0xCE]),
@@ -1616,6 +1617,64 @@ def test_tvp(cursor: pyodbc.Cursor):
 @pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
 def test_tvp_diffschema(cursor: pyodbc.Cursor):
     _test_tvp(cursor, True)
+
+
+def _test_scanning_all_tvp_rows(cursor: pyodbc.Cursor, data):
+    # Make sure we check all the rows of the TVP before binding.
+    # Splitting into multiple tests to prevent one failure from
+    # masking other problems.
+    procname = "SelectFromScannedTVP"
+    typename = "TestTVPForScanning"
+    try:
+        cursor.execute(f"DROP PROCEDURE {procname}")
+    except pyodbc.ProgrammingError:
+        pass
+    try:
+        cursor.execute(f"DROP TYPE {typename}")
+    except pyodbc.ProgrammingError:
+        pass
+    cursor.execute(f"CREATE TYPE {typename} AS TABLE(val DECIMAL(20,4))")
+    cursor.execute(f"""\
+        CREATE PROCEDURE {procname}
+            @TVP {typename} READONLY
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SELECT * FROM @TVP;
+        END
+        """)
+    cursor.commit()
+    cursor.execute(f"EXEC {procname} ?", [data])
+    results = [list(row) for row in cursor.fetchall()]
+    assert results == data
+    cursor.execute(f"DROP PROCEDURE {procname}")
+    cursor.execute(f"DROP TYPE {typename}")
+    cursor.commit()
+
+
+@pytest.mark.skipif(SQLSERVER_YEAR < 2008, reason="TVP not supported until 2008")
+@pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
+def test_tvp_decimal_mixed_precision(cursor: pyodbc.Cursor):
+    """Test for https://github.com/mkleehammer/pyodbc/issues/996."""
+    _test_scanning_all_tvp_rows(cursor, [[Decimal("4.0000")], [Decimal("25.000")]])
+
+
+@pytest.mark.skipif(SQLSERVER_YEAR < 2008, reason="TVP not supported until 2008")
+@pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
+def test_tvp_decimal_mixed_scale(cursor: pyodbc.Cursor):
+    """Test the different number decimal digits, but same number of integer digits."""
+    _test_scanning_all_tvp_rows(cursor, [[Decimal("4.000")], [Decimal("4.0000")]])
+
+
+@pytest.mark.skipif(SQLSERVER_YEAR < 2008, reason="TVP not supported until 2008")
+@pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
+def test_tvp_decimal_mixed_shape(cursor: pyodbc.Cursor):
+    """Test same number of digits, shifting decimal point.
+
+    See the lengthy comment in the code for BindTVPColumns().
+    """
+    _test_scanning_all_tvp_rows(cursor, [[Decimal("4.0000")], [Decimal("40.000")]])
+    _test_scanning_all_tvp_rows(cursor, [[Decimal("40.000")], [Decimal("4.0000")]])
 
 
 @pytest.mark.skipif(SQLSERVER_YEAR < 2000, reason='sql_variant not supported until 2000')
