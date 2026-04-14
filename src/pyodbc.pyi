@@ -3,6 +3,7 @@
 from __future__ import annotations
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from typing import Any, Callable, Final, Union
+from typing_extensions import LiteralString
 
 
 # SQLSetConnectAttr attributes
@@ -484,7 +485,7 @@ class Connection:
         """
         ...
 
-    def execute(self, sql: str, *params: Any) -> Cursor:
+    def execute(self, sql: LiteralString, *params: Any) -> Cursor:
         """A convenience function for running queries directly from a Connection object.
         Creates a new cursor, runs the SQL query, and returns the new cursor.
 
@@ -619,7 +620,7 @@ class Cursor:
         """Not supported."""
         ...
 
-    def execute(self, sql: str, *params: Any) -> Cursor:
+    def execute(self, sql: LiteralString, *params: Any) -> Cursor:
         """Run a SQL query and return the cursor.  If the query returns multiple result
         sets (generally because the SQL query contained multiple statements), retrieve
         them by making multiple calls to the nextset() function.
@@ -633,7 +634,7 @@ class Cursor:
         """
         ...
 
-    def executemany(self, sql: str, params: Union[Sequence, Iterator, Generator], /) -> None:
+    def executemany(self, sql: LiteralString, params: Union[Sequence, Iterator, Generator], /) -> None:
         """Run the SQL query against an iterable of parameters.  The behavior of this
         function depends heavily on the setting of the fast_executemany cursor property.
         See the Wiki for details.
