@@ -1656,6 +1656,49 @@ def test_sql_variant(cursor: pyodbc.Cursor):
         assert results[index] == expected_value
 
 
+def test_rows_as_dicts(cursor: pyodbc.Cursor):
+    """Test enhancement for ticket #171"""
+
+    # Create and populate a test table.
+    cursor.execute("create table t1 (id int, name varchar(20))")
+    cursor.execute("insert into t1 values (42, 'Kathleen')")
+
+    # Verify the default behavior
+    assert cursor.rows_as_dicts is False
+    row = cursor.execute("select * from t1").fetchone()
+    assert not isinstance(row, dict)
+    assert isinstance(row, pyodbc.Row)
+    assert isinstance(row[0], int)
+    assert isinstance(row[1], str)
+    assert len(row) == 2
+    with pytest.raises(TypeError, match="row indices must be integers"):
+        print(row["name"])
+
+    # Test the dict option
+    cursor.rows_as_dicts = True
+    row = cursor.execute("select * from t1").fetchone()
+    assert not isinstance(row, pyodbc.Row)
+    assert isinstance(row, dict)
+    assert row == {"id": 42, "name": "Kathleen"}
+    assert isinstance(row["id"], int)
+    assert isinstance(row["name"], str)
+    assert len(row) == 2
+    with pytest.raises(KeyError):
+        print(row[1])
+
+    # Test aliasing
+    row = cursor.execute("select name as n1, name as n2 from t1").fetchone()
+    assert len(row) == 2
+    assert row == {"n1": "Kathleen", "n2": "Kathleen"}
+    with pytest.raises(KeyError):
+        print(row["name"])
+
+    # Test with a duplicate name
+    row = cursor.execute("select name, name from t1").fetchone()
+    assert len(row) == 1
+    assert row == {"name": "Kathleen"}
+
+
 def get_sqlserver_version(cursor: pyodbc.Cursor):
 
     """

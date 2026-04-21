@@ -568,6 +568,15 @@ class Cursor:
         ...
 
     @property
+    def rows_as_dicts(self) -> bool:
+        """If True, rows are returned as dicts instead of Row objects."""
+        ...
+
+    @rows_as_dicts.setter
+    def rows_as_dicts(self, value: bool) -> None:
+        ...
+
+    @property
     def messages(self) -> list[tuple[str, Union[str, bytes]]] | None:
         """Any descriptive messages returned by the last call to execute(), e.g. PRINT
         statements, or None."""

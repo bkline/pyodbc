@@ -1134,7 +1134,7 @@ static PyObject* Cursor_setinputsizes(PyObject* self, PyObject* sizes)
         PyErr_SetString(ProgrammingError, "Invalid cursor object.");
         return 0;
     }
-    
+
     Cursor *cur = (Cursor*)self;
     if (Py_None == sizes)
     {
@@ -1203,6 +1203,34 @@ static PyObject* Cursor_fetch(Cursor* cur)
         }
 
         apValues[i] = value;
+    }
+
+    // Return a dict instead of a Row if so requested.
+    // See https://github.com/mkleehammer/pyodbc/issues/171,
+    if (cur->rows_as_dicts)
+    {
+        PyObject* dict = PyDict_New();
+        if (!dict)
+        {
+            FreeRowValues(field_count, apValues);
+            return 0;
+        }
+
+        PyObject* name;
+        PyObject* index;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(cur->map_name_to_index, &pos, &name, &index))
+        {
+            Py_ssize_t i = PyNumber_AsSsize_t(index, PyExc_IndexError);
+            if (PyDict_SetItem(dict, name, apValues[i]) == -1)
+            {
+                Py_DECREF(dict);
+                FreeRowValues(field_count, apValues);
+                return 0;
+            }
+        }
+        FreeRowValues(field_count, apValues);
+        return dict;
     }
 
     return (PyObject*)Row_InternalNew(cur->description, cur->map_name_to_index, field_count, apValues);
@@ -2212,6 +2240,8 @@ static char messages_doc[] =
     "This read-only attribute is a list of all the diagnostic messages in the\n" \
     "current result set.";
 
+static char rowsasdicts_doc[] = "If True, rows are returned as dicts instead of Row objects.";
+
 static PyMemberDef Cursor_members[] =
 {
     {"rowcount",    T_INT,       offsetof(Cursor, rowcount),        READONLY, rowcount_doc },
@@ -2220,6 +2250,7 @@ static PyMemberDef Cursor_members[] =
     {"connection",  T_OBJECT_EX, offsetof(Cursor, cnxn),            READONLY, connection_doc },
     {"fast_executemany",T_BOOL,  offsetof(Cursor, fastexecmany),    0,        fastexecmany_doc },
     {"messages",    T_OBJECT_EX, offsetof(Cursor, messages),        READONLY, messages_doc },
+    {"rows_as_dicts", T_BOOL,    offsetof(Cursor, rows_as_dicts),   0,        rowsasdicts_doc },
     { 0 }
 };
 
@@ -2504,6 +2535,7 @@ Cursor_New(Connection* cnxn)
         cur->rowcount          = -1;
         cur->map_name_to_index = 0;
         cur->fastexecmany      = 0;
+        cur->rows_as_dicts     = 0;
         cur->messages          = Py_None;
 
         Py_INCREF(cnxn);
