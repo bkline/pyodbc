@@ -1656,6 +1656,78 @@ def test_sql_variant(cursor: pyodbc.Cursor):
         assert results[index] == expected_value
 
 
+def test_bindinfo_cache(cursor: pyodbc.Cursor):
+    """Make sure bindinfo caching doesn't break anything"""
+    today = date.today()
+    now = datetime.now()
+    coltypes = (
+        ("INT", [None, 1, 10, 100, 1_000, 10_000, 100_000, 1_000_000]),
+        ("CHAR(4)", [None] + ["abcd"] * 10),
+        ("VARCHAR(256)", [None, "abcd", "abcd" * 2, "abcd" * 4, "abcd" * 8, "abcd" * 16]),
+        ("NVARCHAR(256)", [None, "Bjørn", "Bjørn" * 2, "Bjørn" * 4, "Bjørn" * 8, "Bjørn" * 16]),
+        ("DATE", [None] + [today] * 10),
+        ("DATETIME2", [None] + [now] * 10),
+        ("NUMERIC(5,2)", [None, Decimal("1.0"), Decimal(".2"), Decimal("123.45")]),
+        ("FLOAT", [None] + [3.14] * 20),
+        ("BIT", [None, 0, 1]),
+        ("BINARY(4)", [None] + [b"abcd"] * 10),
+        ("VARBINARY(16)", [None, b"abcd", b"abcd" * 2, b"abcd" * 3, b"abcd" * 4]),
+    )
+    for coltype, data in coltypes:
+        cursor.connection.bindinfo_cache_size = 5
+        cursor.execute(f"CREATE TABLE t1 (value {coltype})")
+        for value in data:
+            cursor.execute("INSERT INTO t1 VALUES (?)", value)
+        cursor.execute("SELECt * FROM t1")
+        values = [row.value for row in cursor.fetchall()]
+        assert values == data
+        cursor.connection.bindinfo_cache_size = 0  # clear the cache when a table's schema changes
+        cursor.execute("DROP TABLE t1")
+
+
+def test_var_binding_length(cursor: pyodbc.Cursor):
+    """Make sure var_binding_length doesn't break anything"""
+    today = date.today()
+    now = datetime.now()
+    coltypes = (
+        ("INT", [None, 1, 10, 100, 1_000, 10_000, 100_000, 1_000_000]),
+        ("CHAR(4)", [None, "", "a", "ab", "abc", "abcd"]),
+        ("VARCHAR(256)", [None, "abcd", "abcd" * 2, "abcd" * 4, "abcd" * 8, "abcd" * 16]),
+        ("NVARCHAR(256)", [None, "Bjørn", "Bjørn" * 2, "Bjørn" * 4, "Bjørn" * 8, "Bjørn" * 16]),
+        ("DATE", [None] + [today] * 10),
+        ("DATETIME2", [None] + [now] * 10),
+        ("NUMERIC(5,2)", [None, Decimal("1.0"), Decimal(".2"), Decimal("123.45")]),
+        ("FLOAT", [None] + [3.14] * 20),
+        ("BIT", [None, 0, 1]),
+        ("BINARY(4)", [None, b"", b"\1", b"\1\2", b"\1\2\3", b"\1\2\3\4"]),
+        ("VARBINARY(16)", [None, b"abcd", b"abcd" * 2, b"abcd" * 3, b"abcd" * 4]),
+    )
+    expected = dict(coltype for coltype in coltypes)
+    expected["CHAR(4)"] = [None, "    ", "a   ", "ab  ", "abc ", "abcd"]
+    expected["BINARY(4)"] = [None, b"\0\0\0\0", b"\1\0\0\0", b"\1\2\0\0", b"\1\2\3\0", b"\1\2\3\4"]
+    cursor.connection.var_binding_length = 1
+    for coltype, data in coltypes:
+        cursor.execute(f"CREATE TABLE t1 (value {coltype})")
+        for value in data:
+            cursor.execute("INSERT INTO t1 VALUES (?)", value)
+        cursor.execute("SELECt * FROM t1")
+        values = [row.value for row in cursor.fetchall()]
+        assert values == expected[coltype]
+        cursor.execute("DROP TABLE t1")
+    for coltype, data in coltypes:
+        if coltype.startswith("CHAR") or coltype.startswith("BINARY"):
+            cursor.connection.var_binding_length = 4
+        else:
+            cursor.connection.var_binding_length = 256
+        cursor.execute(f"CREATE TABLE t1 (value {coltype})")
+        for value in data:
+            cursor.execute("INSERT INTO t1 VALUES (?)", value)
+        cursor.execute("SELECt * FROM t1")
+        values = [row.value for row in cursor.fetchall()]
+        assert values == expected[coltype]
+        cursor.execute("DROP TABLE t1")
+
+
 def get_sqlserver_version(cursor: pyodbc.Cursor):
 
     """

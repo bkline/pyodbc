@@ -716,13 +716,15 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
 
     if (cParams > 0)
     {
-        // There are parameters, so we'll need to prepare the SQL statement and bind the parameters.  (We need to
-        // prepare the statement because we can't bind a NULL (None) object without knowing the target datatype.  There
-        // is no one data type that always maps to the others (no, not even varchar)).
-
         if (!PrepareAndBind(cur, pSql, params, skip_first))
             return 0;
-
+    }
+    else
+    {
+        Py_XDECREF(cur->pPreparedSQL);
+        cur->pPreparedSQL = 0;
+    }
+    if (cur->pPreparedSQL) {
         szLastFunction = "SQLExecute";
         Py_BEGIN_ALLOW_THREADS
         ret = SQLExecute(cur->hstmt);
@@ -730,11 +732,6 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
     }
     else
     {
-        // REVIEW: Why don't we always prepare?  It is highly unlikely that a user would need to execute the same SQL
-        // repeatedly if it did not have parameters, so we are not losing performance, but it would simplify the code.
-
-        Py_XDECREF(cur->pPreparedSQL);
-        cur->pPreparedSQL = 0;
 
         szLastFunction = "SQLExecDirect";
 
@@ -1134,7 +1131,7 @@ static PyObject* Cursor_setinputsizes(PyObject* self, PyObject* sizes)
         PyErr_SetString(ProgrammingError, "Invalid cursor object.");
         return 0;
     }
-    
+
     Cursor *cur = (Cursor*)self;
     if (Py_None == sizes)
     {

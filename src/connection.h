@@ -12,6 +12,55 @@
 #ifndef CONNECTION_H
 #define CONNECTION_H
 
+#include <string>
+#include <list>
+#include <unordered_map>
+#include <vector>
+#include <optional>
+
+// -------------------------------------------------------------------
+// BindInfo - plain data structure
+// Used for caching information needed for SQLBindParameter.
+// -------------------------------------------------------------------
+struct BindInfo
+{
+    SQLULEN column_size;
+    SQLSMALLINT parameter_type;
+    SQLSMALLINT decimal_digits;
+};
+
+// -------------------------------------------------------------------
+// BindInfoCache - cache with fixed capacity
+// -------------------------------------------------------------------
+typedef std::vector<BindInfo> BindInfoSet;
+class BindInfoCache {
+public:
+    explicit BindInfoCache(size_t capacity) : capacity_(capacity) {}
+
+    // Insert or update an entry. Moves it to front (most recent).
+    void put(const std::string& key, const BindInfoSet& value);
+
+    // Retrieve by key. If found, moves to front and returns value.
+    std::optional<BindInfoSet> get(const std::string& key);
+
+    // Check existence without affecting LRU order.
+    bool contains(const std::string& key) const { return map_.find(key) != map_.end(); }
+
+    // Capacity (maximum number of entries).
+    size_t capacity() const { return capacity_; }
+
+    // Number of entries currently in the cache.
+    size_t size() const { return map_.size(); }
+
+    // Shrink or expand capacity, preserving what we can.
+    void resize(size_t new_capacity);
+
+private:
+    size_t capacity_;
+    std::list<std::pair<std::string, BindInfoSet>> list_;          // front = most recent
+    std::unordered_map<std::string, decltype(list_)::iterator> map_;
+};
+
 struct Cursor;
 
 extern PyTypeObject ConnectionType;
@@ -44,6 +93,15 @@ struct Connection
 
     // The connection timeout in seconds.
     long timeout;
+
+    // Save binding information that might help performance.
+    BindInfoCache* bindinfo_cache;
+
+    // Round column lengths up by multiples of this number when binding for variable-length types.
+    size_t var_binding_length;
+
+    // Set to anything other than pyodbc.SQL_UNKNOWN_TYPE to avoid calls to SQLPrepare with NULL parameters.
+    SQLSMALLINT none_binding;
 
     // Pointer connection attributes may require that the pointed-to object be kept
     // valid until some unspecified time in the future, so keep them here for now.

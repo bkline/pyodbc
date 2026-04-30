@@ -18,6 +18,54 @@
 #include "cnxninfo.h"
 
 
+// Insert or update an entry. If the cache is full, the least recently used item is evicted.
+void BindInfoCache::put(const std::string& key, const BindInfoSet& value) {
+    auto it = map_.find(key);
+    if (it != map_.end()) {
+        // Key exists: update value and move to front.
+        it->second->second = value;
+        list_.splice(list_.begin(), list_, it->second);
+        return;
+    }
+    // Key new: if full, evict the last (least recently used) item.
+    if (map_.size() >= capacity_) {
+        const auto& lastKey = list_.back().first;
+        map_.erase(lastKey);
+        list_.pop_back();
+    }
+    // Insert new item at the front.
+    list_.emplace_front(key, value);
+    map_[key] = list_.begin();
+}
+
+// Retrieve a value by key. Returns std::nullopt if not found.
+std::optional<BindInfoSet> BindInfoCache::get(const std::string& key) {
+    auto it = map_.find(key);
+    if (it == map_.end())
+        return std::nullopt;
+
+    // Move the accessed node to the front (unless it's already there).
+    if (it->second != list_.begin())
+        list_.splice(list_.begin(), list_, it->second);
+    return it->second->second;
+}
+
+// Adjust the capacity of the cache, discarding any entries we can no longer accommodate.
+void BindInfoCache::resize(size_t new_capacity) {
+    if (new_capacity == capacity_) return;
+
+    if (new_capacity < capacity_) {
+        // Shrink: remove least recent entries from the back
+        while (map_.size() > new_capacity) {
+            const auto& last_key = list_.back().first;
+            map_.erase(last_key);
+            list_.pop_back();
+        }
+    }
+    // For both grow and shrink we need to update the private member variable.
+    capacity_ = new_capacity;
+}
+
 static char connection_doc[] =
     "Connection objects manage connections to the database.\n"
     "\n"
@@ -249,6 +297,9 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeou
     cnxn->searchescape = 0;
     cnxn->maxwrite     = 0;
     cnxn->timeout      = 0;
+    cnxn->bindinfo_cache = NULL;
+    cnxn->none_binding = SQL_UNKNOWN_TYPE;
+    cnxn->var_binding_length = 0;
     cnxn->map_sqltype_to_converter = 0;
 
     cnxn->attrs_before = attrs_before_o.Detach();
@@ -425,6 +476,9 @@ static int Connection_clear(PyObject* self)
 
     Py_XDECREF(cnxn->map_sqltype_to_converter);
     cnxn->map_sqltype_to_converter = 0;
+
+    delete cnxn->bindinfo_cache;
+    cnxn->bindinfo_cache = 0;
 
     return 0;
 }
@@ -991,6 +1045,90 @@ static int Connection_settimeout(PyObject* self, PyObject* value, void* closure)
     return 0;
 }
 
+static PyObject* Connection_getbindinfocachesize(PyObject* self, void* closure)
+{
+    UNUSED(closure);
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return 0;
+    if (!cnxn->bindinfo_cache)
+        return PyLong_FromLong(0);
+    return PyLong_FromSize_t(cnxn->bindinfo_cache->capacity());
+}
+
+static int Connection_setbindinfocachesize(PyObject* self, PyObject* value, void* closure)
+{
+    UNUSED(closure);
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return -1;
+    size_t cache_size = PyLong_AsSize_t(value);
+    if (cache_size == (size_t)-1 && PyErr_Occurred())
+        return -1;
+    if (cache_size > 0) {
+        if (!cnxn->bindinfo_cache) {
+            cnxn->bindinfo_cache = new BindInfoCache(cache_size);
+        } else {
+            cnxn->bindinfo_cache->resize(cache_size);
+        }
+    } else {
+        delete cnxn->bindinfo_cache;
+        cnxn->bindinfo_cache = NULL;
+    }
+    return 0;
+}
+
+static PyObject* Connection_getvarbindinglength(PyObject* self, void* closure)
+{
+    UNUSED(closure);
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return 0;
+    if (cnxn->var_binding_length)
+        return PyLong_FromSize_t(cnxn->var_binding_length);
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static int Connection_setvarbindinglength(PyObject* self, PyObject* value, void* closure)
+{
+    UNUSED(closure);
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return -1;
+    if (value == Py_None)
+        cnxn->var_binding_length = 0;
+    else {
+        size_t length = PyLong_AsSize_t(value);
+        if (length == (size_t)-1 && PyErr_Occurred())
+            return -1;
+        cnxn->var_binding_length = length;
+    }
+    return 0;
+}
+
+static PyObject* Connection_getnonebinding(PyObject* self, void* closure)
+{
+    UNUSED(closure);
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return 0;
+    return PyLong_FromLong((long)cnxn->none_binding);
+}
+
+static int Connection_setnonebinding(PyObject* self, PyObject* value, void* closure)
+{
+    UNUSED(closure);
+    Connection* cnxn = Connection_Validate(self);
+    if (!cnxn)
+        return -1;
+    long binding = PyLong_AsLong(value);
+    if (binding == -1 && PyErr_Occurred())
+        return -1;
+    cnxn->none_binding = binding;
+    return 0;
+}
+
 static bool _remove_converter(PyObject* self, SQLSMALLINT sqltype)
 {
     Connection* cnxn = (Connection*)self;
@@ -1394,6 +1532,21 @@ static PyGetSetDef Connection_getseters[] = {
     { "timeout", Connection_gettimeout, Connection_settimeout,
       "The timeout in seconds, zero means no timeout.", 0 },
     { "maxwrite", Connection_getmaxwrite, Connection_setmaxwrite, "The maximum bytes to write before using SQLPutData.", 0 },
+    { "bindinfo_cache_size", Connection_getbindinfocachesize, Connection_setbindinfocachesize,
+      "The number of prepared queries for which the connection should\n"
+      "remember bind information (zero disables cache).", 0 },
+    { "var_binding_length", Connection_getvarbindinglength, Connection_setvarbindinglength,
+      "If set to an integer greater than zero, bind information is determined\n"
+      "based on the values rather than by preparing the statements, and column\n"
+      "lengths for variable-length value types are rounded up to multiples of\n"
+      "the value of this property. Set to None (the default) or 0 to disable\n"
+      "this override.", 0 },
+    { "none_binding", Connection_getnonebinding, Connection_setnonebinding,
+      "By default, any query for which at least one parameter value is None will\n"
+      "result in calls to SQLPrepare() and SQLDescribeParam() (providing the\n"
+      "driver supports both calls), ignoring the var_binding_length property.\n"
+      "Set this property to pyodbc.SQLVARCHAR to avoid those calls when the\n"
+      "var_binding_length has been set to an integer greater than zero.", 0 },
     { 0 }
 };
 

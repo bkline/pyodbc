@@ -85,6 +85,7 @@ def get_compiler_settings():
 
     if os.name == 'nt':
         settings['extra_compile_args'].extend([
+            '/std:c++17',  # support for std::optional
             '/Wall',
             '/wd4514',     # unreference inline function removed
             '/wd4820',     # padding after struct member
@@ -127,7 +128,8 @@ def get_compiler_settings():
         # about this *a lot*.
         settings['extra_compile_args'].extend([
             '-Wno-write-strings',
-            '-Wno-deprecated-declarations'
+            '-Wno-deprecated-declarations',
+            '-std=c++17',
         ])
 
         # Homebrew installs odbc_config

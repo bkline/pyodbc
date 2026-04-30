@@ -379,6 +379,55 @@ class Connection:
     def timeout(self, value: int) -> None:
         ...
 
+    @property
+    def bindinfo_cache_size(self) -> int:
+        """The size of the cache used for parameter binding information.
+
+        Set to zero (the default) to disable this caching."""
+        ...
+
+    @bindinfo_cache_size.setter
+    def bindinfo_cache_size(self, value: int) -> None:
+        ...
+
+    @property
+    def var_binding_length(self) -> int | None:
+        """Round column lengths for variable-length parameter type.
+
+        By default, if the driver supports SQLPrepare() and SQLDescribeParam(),
+        for any SQL statement submitted with parameters, we invoke those functions
+        to gather information needed for binding those parameters (caching that
+        information if caching of bind information is enabled).  That behavior can
+        be modified by setting this property to an integer greater than zero, in
+        which case the binding information is derived solely by examination of the
+        parameter values if that is possible (see the none_binding property).
+        The var_binding_length value is used to round up the column lengths used
+        for variable-length columns, avoiding inefficiencies introduced by DBMSs
+        which create a separate query plan for each row if the length of those
+        values differ. In the degenerate case, you can set this property to 1,
+        which bypasses SQLPrepare and SQLDescribeParam when possible, but without
+        rounding up the column lengths used for binding."""
+        ...
+
+    @var_binding_length.setter
+    def var_binding_length(self, value: int | None) -> None:
+        ...
+
+    @property
+    def none_binding(self) -> int:
+        """SQL type to use for binding a column whose parameter value is None.
+
+        By default, any query for which at least one parameter value is None will
+        result in calls to SQLPrepare() and SQLDescribeParam() (providing the
+        driver supports both calls), ignoring the var_binding_length property.
+        Set this property to pyodbc.SQLVARCHAR to avoid those calls when the
+        var_binding_length has been set to an integer greater than zero."""
+        ...
+
+    @none_binding.setter
+    def none_binding(self, value: int) -> None:
+        ...
+
 
     # implemented dunder methods
     def __enter__(self) -> Connection: ...

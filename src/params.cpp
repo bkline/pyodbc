@@ -23,7 +23,7 @@
 #include "dbspecific.h"
 #include "row.h"
 #include <datetime.h>
-
+#include <iostream>
 
 inline Connection* GetConnection(Cursor* cursor)
 {
@@ -1420,38 +1420,242 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
     int        params_offset = skip_first ? 1 : 0;
     Py_ssize_t cParams       = original_params == 0 ? 0 : PySequence_Length(original_params) - params_offset;
 
-    if (!Prepare(cur, pSql))
-        return false;
-
-    if (cParams != cur->paramcount)
+    // Get information needed from the back end if appropriate.
+    std::optional<BindInfoSet> bindinfo;
+    bool need_prepare = true;
+    if (!cur->cnxn->supports_describeparam)
+        need_prepare = false;
+    else if (cur->cnxn->var_binding_length)
     {
-        RaiseErrorV(0, ProgrammingError, "The SQL contains %d parameter markers, but %d parameters were supplied",
-                    cur->paramcount, cParams);
-        return false;
+        if (cur->cnxn->none_binding != SQL_UNKNOWN_TYPE)
+            need_prepare = false;
+        else
+        {
+            // This is more complicated than it would have been if the implementation of
+            // setinputsizes matched the documentation provided in pyodbc.pyi, which says
+            // that each member of the sequence for that property must itself be a tuple
+            // of three integers. Inspection of the implementation shows that this "invariant"
+            // is not enforced, and in fact, UpdateParamInfo also assumes that the users can
+            // also have passed a single integer instead of a tuple for one or more of the
+            // items in the inputsizes sequence. Only members which are a tuple are useful
+            // for determining the column type when the value is Py_None.
+            bool has_unhandled_null = false;
+            Py_ssize_t ninputsizes = cur->inputsizes ? PySequence_Length(cur->inputsizes) : 0;
+            PyObject* inputsizes = ninputsizes ? PySequence_Fast(cur->inputsizes, "inputsizes must be a sequence") : NULL;
+            if (PyErr_Occurred())
+                return false;
+            PyObject* params = PySequence_Fast(original_params, "params must be a sequence");
+            if (!params)
+            {
+                Py_XDECREF(inputsizes);
+                return false;
+            }
+            for (Py_ssize_t i = 0, j = params_offset; i < cParams; ++i, ++j)
+            {
+                if (PySequence_Fast_GET_ITEM(params, j) == Py_None)
+                {
+                    if (i < ninputsizes)
+                    {
+                        PyObject* o = PySequence_Fast_GET_ITEM(inputsizes, i);
+                        if (PySequence_Check(o))
+                        {
+                            if (!PyUnicode_Check(o) && !PyBytes_Check(o) && !PyByteArray_Check(o))
+                                continue;
+                        }
+                    }
+                    has_unhandled_null = true;
+                    break;
+                }
+            }
+            Py_DECREF(params);
+            Py_XDECREF(inputsizes);
+            if (!has_unhandled_null)
+                need_prepare = false;
+        }
+    }
+    if (need_prepare)
+    {
+        // Call SQLPrepare() (unless we're handling an executemany() call for which that's already happened).
+        if (!Prepare(cur, pSql))
+            return false;
+        if (cParams != cur->paramcount)
+        {
+            RaiseErrorV(0, ProgrammingError, "The SQL contains %d parameter markers, but %d parameters were supplied",
+                        cur->paramcount, cParams);
+            return false;
+        }
+
+        // See if the binding information we need is cached.
+        std::string key;
+        if (cur->cnxn->bindinfo_cache)
+        {
+            Py_ssize_t size;
+            const char* utf8 = PyUnicode_AsUTF8AndSize(pSql, &size);
+            if (!utf8)
+            {
+                PyErr_NoMemory();
+                return false;
+            }
+            try
+            {
+                key.assign(utf8, size);
+            }
+            catch (const std::bad_alloc&)
+            {
+                PyErr_NoMemory();
+                return false;
+            }
+            bindinfo = cur->cnxn->bindinfo_cache->get(key);
+            // std::cout << "bindinfo " << (bindinfo ? "FOUND" : "NOT FOUND") << " in cache\n";
+        }
+
+        // No luck with the cache (or caching is not enabled), so collect the binding information.
+        if (!bindinfo)
+        {
+            try
+            {
+                bindinfo = BindInfoSet(cParams);
+            }
+            catch (const std::bad_alloc&)
+            {
+                PyErr_NoMemory();
+                return false;
+            }
+            BindInfo* p = bindinfo->data();
+            for (size_t i = 0; i < (size_t)cParams; ++i, ++p)
+            {
+                SQLSMALLINT nullable;
+                SQLRETURN ret;
+
+                Py_BEGIN_ALLOW_THREADS
+                ret = SQLDescribeParam(cur->hstmt, (SQLUSMALLINT)(i + 1),
+                                       &p->parameter_type,
+                                       &p->column_size,
+                                       &p->decimal_digits,
+                                       &nullable);
+                Py_END_ALLOW_THREADS
+
+                if (!SQL_SUCCEEDED(ret))
+                {
+                    // This can happen with ("select ?", None).  We'll default to VARCHAR which works with most types.
+                    p->parameter_type = SQL_VARCHAR;
+                    p->column_size = 1;
+                    p->decimal_digits = 0;
+                }
+            }
+
+            // Remember what we got if caching is enabled.
+            if (cur->cnxn->bindinfo_cache)
+            {
+                try
+                {
+                    cur->cnxn->bindinfo_cache->put(key, *bindinfo);
+                }
+                catch (const std::bad_alloc&)
+                {
+                    PyErr_NoMemory();
+                    return false;
+                }
+            }
+        }
+    }
+    else
+    {
+        // Make sure any residue from previous calls to SQLPrepare are gone.
+        Py_XDECREF(cur->pPreparedSQL);
+        cur->pPreparedSQL = 0;
+        cur->paramcount = cParams;
     }
 
     cur->paramInfos = (ParamInfo*)PyMem_Malloc(sizeof(ParamInfo) * cParams);
     if (cur->paramInfos == 0)
     {
         PyErr_NoMemory();
-        return 0;
+        return false;
     }
     memset(cur->paramInfos, 0, sizeof(ParamInfo) * cParams);
 
     // Since you can't call SQLDesribeParam *after* calling SQLBindParameter, we'll loop through all of the
     // GetParameterInfos first, then bind.
-
+    BindInfo* pinfo = bindinfo ? bindinfo->data() : NULL;
     for (Py_ssize_t i = 0; i < cParams; i++)
     {
         Object param(PySequence_GetItem(original_params, i + params_offset));
-        if (!GetParameterInfo(cur, i, param, cur->paramInfos[i], false))
+        if ((PyObject*)param == Py_None)
+        {
+            // There are a *lot* of user-controllable knobs for overriding default behaviors,
+            // and it's not always clear how they should interact with each other.  This code
+            // assumes that inputsizes, which is column-specific, takes precendence over
+            // none_binding.  Provide some best-guess fallbacks.
+            cur->paramInfos[i].ParameterType = SQL_VARCHAR;
+            cur->paramInfos[i].ValueType     = SQL_C_DEFAULT;
+            cur->paramInfos[i].ColumnSize    = 1;
+            cur->paramInfos[i].DecimalDigits = 0;
+            cur->paramInfos[i].StrLen_or_Ind = SQL_NULL_DATA;
+            if (cur->cnxn->none_binding != SQL_UNKNOWN_TYPE)
+                cur->paramInfos[i].ParameterType = cur->cnxn->none_binding;
+        }
+        else if (!GetParameterInfo(cur, i, param, cur->paramInfos[i], false))
         {
             FreeInfos(cur->paramInfos, cParams);
             cur->paramInfos = 0;
             return false;
         }
+        // std::cout << "old: i=" << i
+        //           << " pt=" << cur->paramInfos[i].ParameterType
+        //           << " vt=" << cur->paramInfos[i].ValueType
+        //           << " cs=" << cur->paramInfos[i].ColumnSize
+        //           << " dd=" << cur->paramInfos[i].DecimalDigits
+        //           << " sl=" << cur->paramInfos[i].StrLen_or_Ind
+        //           << std::endl;
+        if (pinfo)
+        {
+            switch (cur->paramInfos[i].ParameterType)
+            {
+            // It's not confusing at all that we've got two different sets of values for some of these types. ;)
+            case SQL_DATE:
+            case SQL_TIME:
+            case SQL_TIMESTAMP:
+            case SQL_TYPE_DATE:
+            case SQL_TYPE_TIME:
+            case SQL_TYPE_TIMESTAMP:
+            case SQL_FLOAT:
+            case SQL_DOUBLE:
+                break;  // we've got better binding information for that than the driver gives us
+            default:
+                // std::cout << "using binding information from SQLDescribeParam()\n";
+                cur->paramInfos[i].ParameterType = pinfo->parameter_type;
+                cur->paramInfos[i].ColumnSize    = pinfo->column_size;
+                cur->paramInfos[i].DecimalDigits = pinfo->decimal_digits;
+                ++pinfo;
+                // std::cout << "new: i=" << i
+                //         << " pt=" << cur->paramInfos[i].ParameterType
+                //         << " vt=" << cur->paramInfos[i].ValueType
+                //         << " cs=" << cur->paramInfos[i].ColumnSize
+                //         << " dd=" << cur->paramInfos[i].DecimalDigits
+                //         << " sl=" << cur->paramInfos[i].StrLen_or_Ind
+                //         << std::endl;
+            }
+        }
+        else if (cur->cnxn->var_binding_length)
+        {
+            switch (cur->paramInfos[i].ParameterType)
+            {
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY:
+                // std::cout << "var_binding_length: " << cur->cnxn->var_binding_length << std::endl;
+                SQLULEN remainder = cur->paramInfos[i].ColumnSize % cur->cnxn->var_binding_length;
+                if (remainder)
+                    cur->paramInfos[i].ColumnSize += cur->cnxn->var_binding_length - remainder;
+            }
+        }
     }
 
+    // We're finally ready to bind.
     for (Py_ssize_t i = 0; i < cParams; i++)
     {
         if (!BindParameter(cur, i, cur->paramInfos[i]))

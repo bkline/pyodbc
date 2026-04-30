@@ -12,6 +12,13 @@
 #ifndef PYODBC_H
 #define PYODBC_H
 
+#include <string>
+#include <list>
+#include <unordered_map>
+#include <vector>
+#include <optional>
+#include <iostream>
+
 #ifdef _MSC_VER
 // The MS headers generate a ton of warnings.
 #pragma warning(push, 0)
