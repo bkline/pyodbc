@@ -59,7 +59,7 @@ static char* StrDup(const char* text) {
 }
 
 
-static bool Connect(PyObject* pConnectString, HDBC hdbc, long timeout, PyObject* encoding)
+static bool Connect(PyObject* pConnectString, HDBC hdbc, long timeout, PyObject* encoding, SQLUSMALLINT driver_completion)
 {
     assert(PyUnicode_Check(pConnectString));
 
@@ -88,11 +88,30 @@ static bool Connect(PyObject* pConnectString, HDBC hdbc, long timeout, PyObject*
     if (!cstring.isValid())
         return false;
 
+    SQLHWND hwnd = 0;
+#ifdef _WIN32
+    if (driver_completion != SQL_DRIVER_NOPROMPT)
+    {
+        hwnd = GetDesktopWindow();
+        if (!hwnd)
+        {
+            PyErr_SetString(OperationalError, "Failed to get desktop window handle");
+            return false;
+        }
+    }
+#endif
+
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLDriverConnectW(hdbc, 0, cstring, SQL_NTS, 0, 0, 0, SQL_DRIVER_NOPROMPT);
+    ret = SQLDriverConnectW(hdbc, hwnd, cstring, SQL_NTS, 0, 0, 0, driver_completion);
     Py_END_ALLOW_THREADS
     if (SQL_SUCCEEDED(ret))
         return true;
+
+    if (ret == SQL_NO_DATA)
+    {
+        PyErr_SetString(OperationalError, "User cancelled connection request");
+        return false;
+    }
 
     RaiseErrorFromHandle(0, "SQLDriverConnect", hdbc, SQL_NULL_HANDLE);
 
@@ -170,7 +189,7 @@ static bool ApplyPreconnAttrs(HDBC hdbc, SQLINTEGER ikey, PyObject *value, char 
 }
 
 PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeout, bool fReadOnly,
-                         PyObject* attrs_before, PyObject* encoding)
+                         PyObject* attrs_before, PyObject* encoding, SQLUSMALLINT driver_completion)
 {
     //
     // Allocate HDBC and connect
@@ -213,7 +232,7 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeou
         }
     }
 
-    if (!Connect(pConnectString, hdbc, timeout, encoding))
+    if (!Connect(pConnectString, hdbc, timeout, encoding, driver_completion))
     {
         // Connect has already set an exception.
         Py_BEGIN_ALLOW_THREADS

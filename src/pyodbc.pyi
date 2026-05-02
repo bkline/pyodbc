@@ -294,6 +294,11 @@ SQL_UNION: int
 SQL_USER_NAME: int
 SQL_XOPEN_CLI_YEAR: int
 
+# driver connect completion modes
+SQL_DRIVER_COMPLETE: int
+SQL_DRIVER_COMPLETE_REQUIRED: int
+SQL_DRIVER_NOPROMPT: int
+SQL_DRIVER_PROMPT: int
 
 # pyodbc-specific constants
 BinaryNull: Any  # to distinguish binary NULL values from char NULL values
@@ -999,6 +1004,9 @@ def connect(connstring: str | None = None,
         readonly: To set the connection read-only.  Not all drivers and/or databases support this.
         timeout: Set the connection timeout, in seconds.  This is managed by the driver, not
             pyodbc, and not all drivers support this.
+        driver_completion: One of SQL_DRIVER_PROMPT (only available on Windows),
+            SQL_DRIVER_NO_PROMPT (the default), SQL_DRIVER_COMPLETE, or
+            SQL_DRIVER_COMPLETE_REQUIRED.
         attrs_before: Set low-level connection attributes before a connection is attempted.
         **kwargs: These key/value pairs are used to construct the connection string, or add
             to it (as "key=value;" combinations).

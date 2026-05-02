@@ -400,6 +400,7 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
     int fReadOnly = 0;
     long timeout = 0;
     PyObject* encoding = 0;
+    SQLUSMALLINT driver_completion = SQL_DRIVER_NOPROMPT;
 
     Object attrs_before; // Optional connect attrs set before connecting
 
@@ -475,6 +476,31 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
                 encoding = value;
                 continue;
             }
+            if (PyUnicode_CompareWithASCIIString(key, "driver_completion") == 0)
+            {
+                driver_completion = (SQLUSMALLINT)PyLong_AsLong(value);
+                if (PyErr_Occurred())
+                    return 0;
+                switch (driver_completion)
+                {
+                case SQL_DRIVER_PROMPT:
+                case SQL_DRIVER_COMPLETE:
+                case SQL_DRIVER_COMPLETE_REQUIRED:
+                case SQL_DRIVER_NOPROMPT:
+                    break;
+                default:
+                    PyErr_SetString(ProgrammingError, "Invalid value for driver_completion");
+                    return 0;
+                }
+#ifndef _WIN32
+                if (driver_completion == SQL_DRIVER_PROMPT)
+                {
+                    PyErr_SetString(NotSupportedError, "SQL_DRIVER_PROMPT not supported on this platform");
+                    return 0;
+                }
+#endif
+                continue;
+            }
 
             // Map DB API recommended names to ODBC names (e.g. user --> uid).
 
@@ -521,7 +547,8 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
     }
 
     return (PyObject*)Connection_New(pConnectString.Get(), fAutoCommit != 0, timeout,
-                                     fReadOnly != 0, attrs_before.Detach(), encoding);
+                                     fReadOnly != 0, attrs_before.Detach(), encoding,
+                                     driver_completion);
 }
 
 
@@ -739,7 +766,11 @@ static char connect_doc[] =
     "  timeout\n"
     "    An integer login timeout in seconds, used to set the SQL_ATTR_LOGIN_TIMEOUT\n"
     "    attribute of the connection.  The default is 0 which means the database's\n"
-    "    default timeout, if any, is used.\n";
+    "    default timeout, if any, is used.\n"
+    "\n"
+    "  driver_completion\n"
+    "    One of SQL_DRIVER_PROMPT (only available on Windows), SQL_DRIVER_NO_PROMPT\n"
+    "    (the default), SQL_DRIVER_COMPLETE, or SQL_DRIVER_COMPLETE_REQUIRED.\n";
 
 static char timefromticks_doc[] =
     "TimeFromTicks(ticks) --> datetime.time\n"
@@ -1064,6 +1095,12 @@ static const ConstantDef aConstants[] = {
     MAKECONST(SQL_QUIET_MODE), MAKECONST(SQL_ATTR_QUIET_MODE),
     MAKECONST(SQL_PACKET_SIZE),
     MAKECONST(SQL_ATTR_ANSI_APP),
+
+    // Driver connection completion modes
+    MAKECONST(SQL_DRIVER_COMPLETE),
+    MAKECONST(SQL_DRIVER_COMPLETE_REQUIRED),
+    MAKECONST(SQL_DRIVER_NOPROMPT),
+    MAKECONST(SQL_DRIVER_PROMPT),
 
     // SQL_CONVERT_X
     MAKECONST(SQL_CONVERT_FUNCTIONS),
