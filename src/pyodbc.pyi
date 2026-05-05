@@ -365,6 +365,15 @@ class Connection:
         ...
 
     @property
+    def preserve_tzoffsets(self) -> bool:
+        """Opt-in flag to avoid discarding time zone offset with datetime parameters."""
+        ...
+
+    @preserve_tzoffsets.setter
+    def preserve_tzoffsets(self, value: bool) -> None:
+        ...
+
+    @property
     def searchescape(self) -> str:
         """The character for escaping search pattern characters like "%" and "_".
         This is typically the backslash character but can be driver-specific."""

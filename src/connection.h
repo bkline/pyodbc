@@ -42,6 +42,9 @@ struct Connection
     // The column size of datetime columns, obtained from SQLGetInfo(), used to determine the datetime precision.
     int datetime_precision;
 
+    // Opt-in flag for preserving time zone offset with non-naïve datetime objects.
+    bool preserve_tzoffsets;
+
     // The connection timeout in seconds.
     long timeout;
 

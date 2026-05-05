@@ -22,7 +22,7 @@ import pickle
 import platform
 import re
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pyodbc
 import pytest
@@ -726,3 +726,33 @@ def test_pickling(cnxn: pyodbc.Connection):
     pickled_rows = pickle.dumps(original_rows)
     unpickled_rows = pickle.loads(pickled_rows)
     assert unpickled_rows == original_rows
+
+
+def test_datetime_with_offset(cursor: pyodbc.Cursor):
+    """Verify correct behavior of opt-in to preserve time zone offsets"""
+    tz = timezone(timedelta(hours=2))
+    cursor.connection.autocommit = True
+    aware = datetime(2007, 1, 15, 3, 4, 5, 987654, tzinfo=tz)
+    cursor.execute("create table t1 (dt datetime)")
+
+    # Opt-in not set, offset should be ignored
+    cursor.execute("insert into t1 values (?)", aware)
+    result = cursor.execute("select dt from t1").fetchval()
+    assert isinstance(result, datetime)
+    expected = datetime(2007, 1, 15, 3, 4, 5, 987000)
+    assert result == expected
+
+    # Make sure the offset is preserved when the option is enabled.
+    cursor.execute("DELETE FROM t1")
+    cursor.connection.preserve_tzoffsets = True
+    cursor.execute("insert into t1 values  (?)", aware)
+    result = cursor.execute("select cast(dt AS varchar(50)) AS dt from t1").fetchval()
+    expected = "2007-01-15 03:04:05.987654+02:00"
+    print(result)
+    assert result == expected
+
+    # Try executemany (but not fast_executemany; see https://github.com/softace/sqliteodbc/issues/21).
+    cursor.executemany("insert into t1 values (?)", [[aware], [None], [aware], [aware]])
+    cursor.execute("select cast(dt AS varchar(50)) AS dt from t1 order by 1")
+    results = [row[0] for row in cursor.fetchall()]
+    assert results == [None] + [expected] * 4
