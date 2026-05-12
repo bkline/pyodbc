@@ -1,6 +1,7 @@
 # ignore naive dates/datetimes (DTZnnn):
 # ruff: noqa: DTZ001, DTZ005, DTZ011
 
+import ctypes
 import os
 import re
 import uuid
@@ -1654,6 +1655,24 @@ def test_sql_variant(cursor: pyodbc.Cursor):
 
         assert type(results[index]) is expected_type
         assert results[index] == expected_value
+
+
+def test_handles(cursor: pyodbc.Cursor):
+    """Test the exposed native ODBC handles"""
+
+    conn = cursor.connection
+    for handle in (pyodbc.henv, conn.hdbc, cursor.hstmt):
+        assert isinstance(handle, ctypes.c_void_p)
+        with pytest.raises(TypeError):
+            if handle > 42:
+                print("we should never get here")
+    cursor.close()
+    assert not isinstance(cursor.hstmt, ctypes.c_void_p)
+    assert cursor.hstmt is None
+    assert isinstance(conn.hdbc, ctypes.c_void_p)
+    conn.close()
+    assert not isinstance(conn.hdbc, ctypes.c_void_p)
+    assert conn.hdbc is None
 
 
 def get_sqlserver_version(cursor: pyodbc.Cursor):

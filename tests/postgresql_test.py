@@ -3,6 +3,7 @@ Unit tests for PostgreSQL
 """
 # -*- coding: utf-8 -*-
 
+import ctypes
 import os, uuid
 from decimal import Decimal
 from typing import Iterator
@@ -620,3 +621,21 @@ def test_refcount_encoding():
     count_after = sys.getrefcount(encoding)
 
     assert count_after == count_before
+
+
+def test_handles(cursor: pyodbc.Cursor):
+    """Test the exposed native ODBC handles"""
+
+    conn = cursor.connection
+    for handle in (pyodbc.henv, conn.hdbc, cursor.hstmt):
+        assert isinstance(handle, ctypes.c_void_p)
+        with pytest.raises(TypeError):
+            if handle > 42:
+                print("we should never get here")
+    cursor.close()
+    assert not isinstance(cursor.hstmt, ctypes.c_void_p)
+    assert cursor.hstmt is None
+    assert isinstance(conn.hdbc, ctypes.c_void_p)
+    conn.close()
+    assert not isinstance(conn.hdbc, ctypes.c_void_p)
+    assert conn.hdbc is None

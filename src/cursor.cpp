@@ -1134,7 +1134,7 @@ static PyObject* Cursor_setinputsizes(PyObject* self, PyObject* sizes)
         PyErr_SetString(ProgrammingError, "Invalid cursor object.");
         return 0;
     }
-    
+
     Cursor *cur = (Cursor*)self;
     if (Py_None == sizes)
     {
@@ -2277,9 +2277,27 @@ static int Cursor_setnoscan(PyObject* self, PyObject* value, void *closure)
     return 0;
 }
 
+static PyObject* Cursor_gethstmt(PyObject* self, void* closure)
+{
+    UNUSED(closure);
+
+    // My first thought was to call Cursor_Validate() without the
+    // CURSOR_REQUIRE_OPEN flag, but apparently the semantics for
+    // that function's flags are not what I expected.
+    if (!Cursor_Check(self))
+    {
+        PyErr_SetString(PyExc_TypeError, "Cursor object required");
+        return nullptr;
+    }
+
+    Cursor* cur = (Cursor*)self;
+    return MakeVoidPointerFromHandle(cur->hstmt);
+}
+
 static PyGetSetDef Cursor_getsetters[] =
 {
     {"noscan", Cursor_getnoscan, Cursor_setnoscan, "NOSCAN statement attr", 0},
+    {"hstmt",  Cursor_gethstmt,  0,                "ODBC statement handle", 0},
     { 0 }
 };
 

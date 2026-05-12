@@ -3,7 +3,7 @@
 from __future__ import annotations
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from typing import Any, Callable, Final, Union
-
+import ctypes
 
 # SQLSetConnectAttr attributes
 # ref: https://docs.microsoft.com/en-us/sql/odbc/reference/syntax/sqlsetconnectattr-function
@@ -308,6 +308,7 @@ apilevel: Final[str] = '2.0'
 paramstyle: Final[str] = 'qmark'
 threadsafety: Final[int] = 1
 version: Final[str]  # not pep-0249
+henv: Final[ctypes.c_void_p]
 
 # read-write (not pep-0249)
 lowercase: bool = False
@@ -353,6 +354,11 @@ class Connection:
     @property
     def closed(self) -> bool:
         """Returns True if the connection is closed, False otherwise."""
+        ...
+
+    @property
+    def hdbc(self) -> ctypes.c_void_p | None:
+        """ODBC handle for the connection."""
         ...
 
     @property
@@ -565,6 +571,11 @@ class Cursor:
 
     @fast_executemany.setter
     def fast_executemany(self, value: bool) -> None:
+        ...
+
+    @property
+    def hstmt(self) -> ctypes.c_void_p | None:
+        """ODBC handle for the statement."""
         ...
 
     @property

@@ -86,6 +86,28 @@ PyObject* IntegrityError;
 PyObject* DataError;
 PyObject* NotSupportedError;
 
+// Used for henv, hdbc, and hstmt properties.
+PyObject* MakeVoidPointerFromHandle(SQLHANDLE handle)
+{
+    if (handle == SQL_NULL_HANDLE)
+        Py_RETURN_NONE;
+    static PyObject* c_void_p;
+    if (!c_void_p)
+    {
+        PyObject* ctypes = PyImport_ImportModule("ctypes");
+        if (!ctypes)
+            return nullptr;
+        c_void_p = PyObject_GetAttrString(ctypes, "c_void_p");
+        if (!c_void_p)
+        {
+            Py_DECREF(ctypes);
+            return nullptr;
+        }
+        Py_DECREF(ctypes);
+    }
+    return PyObject_CallFunction(c_void_p, "K", (unsigned long long)(uintptr_t)handle);
+}
+
 struct ExcInfo
 {
     const char* szName;
@@ -311,7 +333,7 @@ static bool AllocateEnv()
         }
     }
     Py_DECREF(odbcversion);
-    
+
     if (!SQL_SUCCEEDED(SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, defaultVersion, sizeof(int))))
     {
         PyErr_SetString(PyExc_RuntimeError, "Unable to set SQL_ATTR_ODBC_VERSION attribute.");
@@ -695,6 +717,22 @@ static PyObject* mod_getdecimalsep(PyObject* self)
     return GetDecimalPoint();
 }
 
+static PyObject* mod_getattr(PyObject* self, PyObject* arg) {
+    const char* name = PyUnicode_AsUTF8(arg);
+    if (!name)
+        return nullptr;
+    if (strcmp(name, "henv") == 0) {
+        if (henv == SQL_NULL_HANDLE)
+        {
+            if (!AllocateEnv())
+                return nullptr;
+        }
+        return MakeVoidPointerFromHandle(henv);
+    }
+    PyErr_Format(PyExc_AttributeError, "module 'pyodbc' has no attribute '%s'", name);
+    return nullptr;
+}
+
 static char connect_doc[] =
     "connect(str, autocommit=False, timeout=0, **kwargs) --> Connection\n"
     "\n"
@@ -793,6 +831,7 @@ static PyMethodDef pyodbc_methods[] =
     { "TimestampFromTicks", (PyCFunction)mod_timestampfromticks, METH_VARARGS,               timestampfromticks_doc },
     { "drivers",            (PyCFunction)mod_drivers,            METH_NOARGS,                drivers_doc },
     { "dataSources",        (PyCFunction)mod_datasources,        METH_NOARGS,                datasources_doc },
+    { "__getattr__",        (PyCFunction)mod_getattr,            METH_O,                     nullptr },
     { 0, 0, 0, 0 }
 };
 
