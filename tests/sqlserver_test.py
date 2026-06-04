@@ -1,6 +1,7 @@
 # ignore naive dates/datetimes (DTZnnn):
 # ruff: noqa: DTZ001, DTZ005, DTZ011
 
+import gc
 import os
 import re
 import uuid
@@ -1453,6 +1454,31 @@ def test_columns(cursor: pyodbc.Cursor):
         cursor.execute(f"drop table {table_name}")
 
 
+@pytest.mark.skipif(IS_FREEDTS, reason="FreeTDS Unicode handling for catalog functions is unreliable")
+def test_statistics_unicode():
+    # https://github.com/mkleehammer/pyodbc/issues/1457
+    # statistics() passed the table name straight to the ANSI SQLStatistics, mis-encoding a
+    # non-ASCII name so the driver matched nothing and returned no rows.  The failure is
+    # masked on a *reused* pooled connection -- it only shows on a fresh physical connection
+    # -- which is why a plain test in the suite doesn't reliably catch it.  Force a fresh
+    # connection with a unique APP= (pooling keys on the connection string), plus a unique
+    # table name for good measure.
+    suffix = uuid.uuid4().hex
+    name = "ランドマーク_" + suffix
+    cnxn = pyodbc.connect(CNXNSTR + f";APP=pyodbc_1457_{suffix}", autocommit=True)
+    cur = cnxn.cursor()
+    cur.execute(f"CREATE TABLE [{name}] (id INT PRIMARY KEY, foo INT)")
+    cur.execute(f"CREATE INDEX ix_foo ON [{name}] (foo)")
+    try:
+        # index_name is column 5 of the SQLStatistics result set
+        index_names = {row[5] for row in cur.statistics(name).fetchall() if row[5] is not None}
+        assert "ix_foo" in index_names, \
+            f"statistics() returned no index info for a Unicode table name; got {index_names}"
+    finally:
+        cur.execute(f"IF OBJECT_ID(N'[{name}]', N'U') IS NOT NULL DROP TABLE [{name}]")
+        cnxn.close()
+
+
 def test_cancel(cursor: pyodbc.Cursor):
     # I'm not sure how to reliably cause a hang to cancel, so for now we'll settle with
     # making sure SQLCancel is called correctly.
@@ -1643,6 +1669,53 @@ def test_tvp(cursor: pyodbc.Cursor):
 @pytest.mark.skipif(IS_FREETDS, reason='FreeTDS does not support TVP')
 def test_tvp_diffschema(cursor: pyodbc.Cursor):
     _test_tvp(cursor, True)
+
+
+def _test_tvp_with_nulls_cleanup(cursor: pyodbc.Cursor, procname: str, typename: str):
+    """Leave the forest as pristine as you found it."""
+
+    cursor.execute(f"""\
+        IF OBJECT_ID(N'dbo.{procname}', N'P') IS NOT NULL
+        DROP PROCEDURE dbo.{procname};
+    """)
+    cursor.execute(f"""
+        IF TYPE_ID(N'dbo.{typename}') IS NOT NULL
+            DROP TYPE dbo.{typename};
+    """)
+
+
+@pytest.mark.skipif(SQLSERVER_YEAR < 2008, reason="TVP not supported until 2008")
+@pytest.mark.skipif(IS_FREEDTS, reason="FreeTDS does not support TVP")
+def test_tvp_with_nulls(cursor: pyodbc.Cursor):
+    """Make sure NULL values in a TVP don't crash the interpreter."""
+
+    # Start with a clean slate.
+    typename = "typeTestNullsInTVP"
+    procname = "spTestNullsInTVP"
+    _test_tvp_with_nulls_cleanup(cursor, procname, typename)
+
+    # Create the custom type and stored procedure.
+    ncols = 100
+    cols = ", ".join([f"col_{c:03d} DECIMAL(36,20)" for c in range(1, ncols+1)])
+    cursor.execute(f"CREATE TYPE dbo.{typename} AS TABLE ({cols})")
+    cursor.execute(f"""\
+        CREATE PROCEDURE dbo.{procname}
+            @data dbo.{typename} READONLY
+        AS
+        BEGIN
+            RETURN 0;
+        END;
+    """)
+    cursor.commit()
+
+    # Invoke the stored procedure.
+    tvp: list[list] = [[3.14159] * ncols, [None] * ncols]
+    cursor.execute(f"EXEC [dbo].{procname} @data=?", [tvp])
+    gc.collect()
+
+    # Be a good digital citizen.
+    _test_tvp_with_nulls_cleanup(cursor, procname, typename)
+    cursor.commit()
 
 
 @pytest.mark.skipif(SQLSERVER_YEAR < 2000, reason='sql_variant not supported until 2000')

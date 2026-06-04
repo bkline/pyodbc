@@ -99,13 +99,11 @@ static bool Connect(PyObject* pConnectString, HDBC hdbc, long timeout, PyObject*
     return false;
 }
 
-static bool ApplyPreconnAttrs(HDBC hdbc, SQLINTEGER ikey, PyObject *value, char *strencoding)
+static bool ApplyPreconnAttrs(HDBC hdbc, SQLINTEGER ikey, PyObject *value, char *strencoding, PyObject *keepalives)
 {
     SQLRETURN ret;
     SQLPOINTER ivalue = 0;
     SQLINTEGER vallen = 0;
-
-    SQLWChar sqlchar;
 
     if (PyLong_Check(value))
     {
@@ -121,19 +119,33 @@ static bool ApplyPreconnAttrs(HDBC hdbc, SQLINTEGER ikey, PyObject *value, char 
     }
     else if (PyByteArray_Check(value))
     {
+        // Keep the value alive beyond this function invocation's lifetime.
+        if (PyList_Append(keepalives, value))  // OOM
+            return false;
         ivalue = (SQLPOINTER)PyByteArray_AsString(value);
         vallen = SQL_IS_POINTER;
     }
     else if (PyBytes_Check(value))
     {
-        ivalue = PyBytes_AsString(value);
+        // Keep the value alive beyond this function invocation's lifetime.
+        if (PyList_Append(keepalives, value))  // OOM
+            return false;
+        ivalue = (SQLPOINTER)PyBytes_AsString(value);
         vallen = SQL_IS_POINTER;
     }
     else if (PyUnicode_Check(value))
     {
-        sqlchar.set(value, strencoding ? strencoding : "utf-16le");
-        ivalue = sqlchar.get();
+        PyObject* po = PyUnicode_AsEncodedString(value, strencoding ? strencoding : "utf-16le", "strict");
+        if (!po)
+            return false;  // OOM
+        ivalue = (SQLPOINTER)PyBytes_AsString(po);
         vallen = SQL_NTS;
+        // Keep the value alive beyond this function invocation's lifetime ...
+        int failed = PyList_Append(keepalives, po);
+        // ... but not forever.
+        Py_DECREF(po);
+        if (failed)  // OOM
+            return false;
     }
     else if (PySequence_Check(value))
     {
@@ -142,7 +154,7 @@ static bool ApplyPreconnAttrs(HDBC hdbc, SQLINTEGER ikey, PyObject *value, char 
         for (Py_ssize_t i = 0; i < len; i++)
         {
             Object v(PySequence_GetItem(value, i));
-            if (!ApplyPreconnAttrs(hdbc, ikey, v.Get(), strencoding))
+            if (!ApplyPreconnAttrs(hdbc, ikey, v.Get(), strencoding, keepalives))
                 return false;
         }
         return true;
@@ -189,8 +201,18 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeou
     // Attributes that must be set before connecting.
     //
 
+    PyObject* preconn_keepalives = 0;
     if (attrs_before)
     {
+        // We have evidence that some drivers hold on to preconnection values longer after the
+        // call to SQLSetConnectAttrW has returned, so we're keeping those values alive to avoid
+        // a crash.
+        // https://github.com/mkleehammer/pyodbc/issues/1469
+        // https://github.com/microsoft/msphpsql/issues/1594
+        preconn_keepalives = PyList_New(0);
+        if (!preconn_keepalives)
+            return 0;
+
         Py_ssize_t pos = 0;
         PyObject* key = 0;
         PyObject* value = 0;
@@ -206,8 +228,9 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeou
 
             if (PyLong_Check(key))
                 ikey = (int)PyLong_AsLong(key);
-            if (!ApplyPreconnAttrs(hdbc, ikey, value, strencoding))
+            if (!ApplyPreconnAttrs(hdbc, ikey, value, strencoding, preconn_keepalives))
             {
+                Py_DECREF(preconn_keepalives);
                 return 0;
             }
         }
@@ -219,8 +242,13 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeou
         Py_BEGIN_ALLOW_THREADS
         SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
         Py_END_ALLOW_THREADS
+        Py_DECREF(preconn_keepalives);
         return 0;
     }
+
+    // The current evidence indicates that the bug in Microsoft's driver isn't as bad as it
+    // could be, so we don't have to keep these objects alive until the connection is closed.
+    Py_XDECREF(preconn_keepalives);
 
     //
     // Connected, so allocate the Connection object.
