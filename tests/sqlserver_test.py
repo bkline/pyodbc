@@ -1454,7 +1454,7 @@ def test_columns(cursor: pyodbc.Cursor):
         cursor.execute(f"drop table {table_name}")
 
 
-@pytest.mark.skipif(IS_FREEDTS, reason="FreeTDS Unicode handling for catalog functions is unreliable")
+@pytest.mark.skipif(IS_FREETDS, reason="FreeTDS Unicode handling for catalog functions is unreliable")
 def test_statistics_unicode():
     # https://github.com/mkleehammer/pyodbc/issues/1457
     # statistics() passed the table name straight to the ANSI SQLStatistics, mis-encoding a
@@ -1685,7 +1685,7 @@ def _test_tvp_with_nulls_cleanup(cursor: pyodbc.Cursor, procname: str, typename:
 
 
 @pytest.mark.skipif(SQLSERVER_YEAR < 2008, reason="TVP not supported until 2008")
-@pytest.mark.skipif(IS_FREEDTS, reason="FreeTDS does not support TVP")
+@pytest.mark.skipif(IS_FREETDS, reason="FreeTDS does not support TVP")
 def test_tvp_with_nulls(cursor: pyodbc.Cursor):
     """Make sure NULL values in a TVP don't crash the interpreter."""
 
