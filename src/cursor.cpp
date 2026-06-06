@@ -649,6 +649,9 @@ int GetDiagRecs(Cursor* cur)
     if (!msg_list)
         return 0;
 
+    // See https://github.com/mkleehammer/pyodbc/issues/489
+    bool text_length_in_bytes = cur->cnxn->compat_diagrec_byte_length;
+
     for (;;)
     {
         cSQLState[0]    = 0;
@@ -664,6 +667,10 @@ int GetDiagRecs(Cursor* cur)
         Py_END_ALLOW_THREADS
         if (!SQL_SUCCEEDED(ret))
             break;
+
+        // Make sure the text length counts characters, not bytes.
+        if (text_length_in_bytes)
+            iTextLength /= sizeof(uint16_t);
 
         // If needed, allocate a bigger error message buffer and retry.
         if (iTextLength > iMessageLen - 1) {
@@ -681,6 +688,8 @@ int GetDiagRecs(Cursor* cur)
             Py_END_ALLOW_THREADS
             if (!SQL_SUCCEEDED(ret))
                 break;
+            if (text_length_in_bytes)
+                iTextLength /= sizeof(uint16_t);
         }
 
         cSQLState[5] = 0;  // Not always NULL terminated (MS Access)
@@ -947,6 +956,9 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
             ret = SQL_NEED_DATA;
         }
     }
+
+    if (ret == SQL_SUCCESS_WITH_INFO)
+        GetDiagRecs(cur);
 
     FreeParameterData(cur);
 
@@ -1458,6 +1470,151 @@ static PyObject* Cursor_tables(PyObject* self, PyObject* args, PyObject* kwargs)
 }
 
 
+static char tablePrivileges_doc[] =
+    "C.tablePrivileges(table=None, catalog=None, schema=None) --> self\n"
+    "\n"
+    "Executes SQLTablePrivileges and creates a results set of tables and the\n"
+    "privileges associated with those tables.\n"
+    "\n"
+    "Pattern strings can be provided to filter the results set.  Some data\n"
+    "sources add additional filtering to suppress rows based on the rights\n"
+    "of the current user.\n"
+    "\n"
+    "For the table and schema values the '_' and '%' characters are interpreted\n"
+    "as wildcards.  The escape character is driver specific, so you should use\n"
+    "the Connection.searchescape property if you need to include one of the\n"
+    "wildcard characters as part of the name being searched.\n"
+    "\n"
+    "If the SQL_ATTR_METADATA_ID statement attribute is set to SQL_TRUE, the\n"
+    "arguments are treated as identifiers and their case is not significant.\n"
+    "Otherwise they are treated literally, and case is significant.\n"
+    "\n"
+    "table\n"
+    "  Optional string search pattern for table names.\n\n"
+    "catalog\n"
+    "  Table catalog name.  If a driver supports catalogs for some tables but\n"
+    "  not for others, such as when the driver retrieves data from different\n"
+    "  DBMSs, an empty string ('') denotes those tables that do not have\n"
+    "  catalogs.  This argument cannot contain a search string pattern.\n\n"
+    "schema\n"
+    "  Search string pattern for schema names.  If a driver supports schemas\n"
+    "  for some tables but not others, an empty string ('') is used to restrict\n"
+    "  the results to tables that do not have schemas.\n\n"
+    "Each row fetched has the following columns:\n"
+    "  0) table_cat\n"
+    "  1) table_schem\n"
+    "  2) table_name\n"
+    "  3) grantor\n"
+    "  4) grantee\n"
+    "  5) privilege\n"
+    "  6) is_grantable";
+
+
+static PyObject* Cursor_tablePrivileges(PyObject* self, PyObject* args, PyObject* kwargs)
+{
+    PyObject* pCatalog = 0;
+    PyObject* pSchema = 0;
+    PyObject* pTable = 0;
+
+    char* kwnames[] = { "table", "catalog", "schema", 0 };
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|OOO", kwnames, &pTable, &pCatalog, &pSchema))
+        return 0;
+
+    Cursor* cur = Cursor_Validate(self, CURSOR_REQUIRE_OPEN);
+
+    if (!free_results(cur, FREE_STATEMENT | FREE_PREPARED))
+        return 0;
+
+    SQLRETURN ret = 0;
+
+    // Use the cursor's encoding.
+    const TextEnc* penc = &cur->cnxn->unicode_enc;
+    bool isWide = penc->ctype == SQL_C_WCHAR;
+    Object oTable;
+    Object oCatalog;
+    Object oSchema;
+    if (pTable && pTable != Py_None)
+    {
+        oTable = penc->Encode(pTable);
+        if (!oTable)
+            return 0;
+    }
+    if (pCatalog && pCatalog != Py_None)
+    {
+        oCatalog = penc->Encode(pCatalog);
+        if (!oCatalog)
+            return 0;
+    }
+    if (pSchema && pSchema != Py_None)
+    {
+        oSchema = penc->Encode(pSchema);
+        if (!oSchema)
+            return 0;
+    }
+    char* szTable = 0;
+    SQLSMALLINT cchTable = SQL_NTS;
+    if (oTable)
+    {
+        szTable = PyBytes_AS_STRING(oTable.Get());
+        if (isWide)
+            cchTable = (SQLSMALLINT)(PyBytes_GET_SIZE(oTable.Get()) / sizeof(uint16_t));
+    }
+    char* szCatalog = 0;
+    SQLSMALLINT cchCatalog = SQL_NTS;
+    if (oCatalog)
+    {
+        szCatalog = PyBytes_AS_STRING(oCatalog.Get());
+        if (isWide)
+            cchCatalog = (SQLSMALLINT)(PyBytes_GET_SIZE(oCatalog.Get()) / sizeof(uint16_t));
+    }
+    char* szSchema = 0;
+    SQLSMALLINT cchSchema = SQL_NTS;
+    if (oSchema)
+    {
+        szSchema = PyBytes_AS_STRING(oSchema.Get());
+        if (isWide)
+            cchSchema = (SQLSMALLINT)(PyBytes_GET_SIZE(oSchema.Get()) / sizeof(uint16_t));
+    }
+
+    Py_BEGIN_ALLOW_THREADS
+    if (isWide)
+        ret = SQLTablePrivilegesW(
+            cur->hstmt,
+            (SQLWCHAR*)szCatalog, cchCatalog,
+            (SQLWCHAR*)szSchema, cchSchema,
+            (SQLWCHAR*)szTable, cchTable
+        );
+    else
+        ret = SQLTablePrivileges(
+            cur->hstmt,
+            (SQLCHAR*)szCatalog, cchCatalog,
+            (SQLCHAR*)szSchema, cchSchema,
+            (SQLCHAR*)szTable, cchTable
+        );
+    Py_END_ALLOW_THREADS
+
+    if (!SQL_SUCCEEDED(ret))
+        return RaiseErrorFromHandle(cur->cnxn, "SQLTablePrivileges", cur->cnxn->hdbc, cur->hstmt);
+
+    SQLSMALLINT cCols;
+    Py_BEGIN_ALLOW_THREADS
+    ret = SQLNumResultCols(cur->hstmt, &cCols);
+    Py_END_ALLOW_THREADS
+    if (!SQL_SUCCEEDED(ret))
+        return RaiseErrorFromHandle(cur->cnxn, "SQLNumResultCols", cur->cnxn->hdbc, cur->hstmt);
+
+    if (!PrepareResults(cur, cCols))
+        return 0;
+
+    if (!create_name_map(cur, cCols, true))
+        return 0;
+
+    // Return the cursor so the results can be iterated over directly.
+    Py_INCREF(cur);
+    return (PyObject*)cur;
+}
+
+
 static char columns_doc[] =
     "C.columns(table=None, catalog=None, schema=None, column=None)\n\n"
     "Creates a results set of column names in specified tables by executing the ODBC SQLColumns function.\n"
@@ -1568,17 +1725,19 @@ char* Cursor_statistics_kwnames[] = { "table", "catalog", "schema", "unique", "q
 
 static PyObject* Cursor_statistics(PyObject* self, PyObject* args, PyObject* kwargs)
 {
-    const char* szCatalog = 0;
-    const char* szSchema  = 0;
-    const char* szTable   = 0;
+    PyObject* pCatalog = 0;
+    PyObject* pSchema  = 0;
+    PyObject* pTable   = 0;
     PyObject* pUnique = Py_False;
     PyObject* pQuick  = Py_True;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|zzOO", Cursor_statistics_kwnames, &szTable, &szCatalog, &szSchema,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|OOOO", Cursor_statistics_kwnames, &pTable, &pCatalog, &pSchema,
                                      &pUnique, &pQuick))
         return 0;
 
     Cursor* cur = Cursor_Validate(self, CURSOR_REQUIRE_OPEN);
+    if (!cur)
+        return 0;
 
     if (!free_results(cur, FREE_STATEMENT | FREE_PREPARED))
         return 0;
@@ -1586,11 +1745,74 @@ static PyObject* Cursor_statistics(PyObject* self, PyObject* args, PyObject* kwa
     SQLUSMALLINT nUnique   = (SQLUSMALLINT)(PyObject_IsTrue(pUnique) ? SQL_INDEX_UNIQUE : SQL_INDEX_ALL);
     SQLUSMALLINT nReserved = (SQLUSMALLINT)(PyObject_IsTrue(pQuick)  ? SQL_QUICK : SQL_ENSURE);
 
+    // Use the cursor's encoding.
+    const TextEnc* penc = &cur->cnxn->unicode_enc;
+    bool isWide = penc->ctype == SQL_C_WCHAR;
+    Object oTable;
+    Object oCatalog;
+    Object oSchema;
+    if (pTable && pTable != Py_None)
+    {
+        oTable = penc->Encode(pTable);
+        if (!oTable)
+            return 0;
+    }
+    if (pCatalog && pCatalog != Py_None)
+    {
+        oCatalog = penc->Encode(pCatalog);
+        if (!oCatalog)
+            return 0;
+    }
+    if (pSchema && pSchema != Py_None)
+    {
+        oSchema = penc->Encode(pSchema);
+        if (!oSchema)
+            return 0;
+    }
+    char* szTable = 0;
+    SQLSMALLINT cchTable = SQL_NTS;
+    if (oTable)
+    {
+        szTable = PyBytes_AS_STRING(oTable.Get());
+        if (isWide)
+            cchTable = (SQLSMALLINT)(PyBytes_GET_SIZE(oTable.Get()) / sizeof(uint16_t));
+    }
+    char* szCatalog = 0;
+    SQLSMALLINT cchCatalog = SQL_NTS;
+    if (oCatalog)
+    {
+        szCatalog = PyBytes_AS_STRING(oCatalog.Get());
+        if (isWide)
+            cchCatalog = (SQLSMALLINT)(PyBytes_GET_SIZE(oCatalog.Get()) / sizeof(uint16_t));
+    }
+    char* szSchema = 0;
+    SQLSMALLINT cchSchema = SQL_NTS;
+    if (oSchema)
+    {
+        szSchema = PyBytes_AS_STRING(oSchema.Get());
+        if (isWide)
+            cchSchema = (SQLSMALLINT)(PyBytes_GET_SIZE(oSchema.Get()) / sizeof(uint16_t));
+    }
+
     SQLRETURN ret = 0;
 
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLStatistics(cur->hstmt, (SQLCHAR*)szCatalog, SQL_NTS, (SQLCHAR*)szSchema, SQL_NTS, (SQLCHAR*)szTable, SQL_NTS,
-                        nUnique, nReserved);
+    if (isWide)
+        ret = SQLStatisticsW(
+            cur->hstmt,
+            (SQLWCHAR*)szCatalog, cchCatalog,
+            (SQLWCHAR*)szSchema, cchSchema,
+            (SQLWCHAR*)szTable, cchTable,
+            nUnique, nReserved
+        );
+    else
+        ret = SQLStatistics(
+            cur->hstmt,
+            (SQLCHAR*)szCatalog, cchCatalog,
+            (SQLCHAR*)szSchema, cchSchema,
+            (SQLCHAR*)szTable, cchTable,
+            nUnique, nReserved
+        );
     Py_END_ALLOW_THREADS
 
     if (!SQL_SUCCEEDED(ret))
@@ -2324,9 +2546,27 @@ static int Cursor_setnoscan(PyObject* self, PyObject* value, void *closure)
     return 0;
 }
 
+static PyObject* Cursor_gethstmt(PyObject* self, void* closure)
+{
+    UNUSED(closure);
+
+    // My first thought was to call Cursor_Validate() without the
+    // CURSOR_REQUIRE_OPEN flag, but apparently the semantics for
+    // that function's flags are not what I expected.
+    if (!Cursor_Check(self))
+    {
+        PyErr_SetString(PyExc_TypeError, "Cursor object required");
+        return nullptr;
+    }
+
+    Cursor* cur = (Cursor*)self;
+    return MakeVoidPointerFromHandle(cur->hstmt);
+}
+
 static PyGetSetDef Cursor_getsetters[] =
 {
     {"noscan", Cursor_getnoscan, Cursor_setnoscan, "NOSCAN statement attr", 0},
+    {"hstmt",  Cursor_gethstmt,  0,                "ODBC statement handle", 0},
     { 0 }
 };
 
@@ -2443,6 +2683,7 @@ static PyMethodDef Cursor_methods[] =
     { "fetchmany",        (PyCFunction)Cursor_fetchmany,        METH_VARARGS,               fetchmany_doc        },
     { "nextset",          (PyCFunction)Cursor_nextset,          METH_NOARGS,                nextset_doc          },
     { "tables",           (PyCFunction)Cursor_tables,           METH_VARARGS|METH_KEYWORDS, tables_doc           },
+    { "tablePrivileges",  (PyCFunction)Cursor_tablePrivileges,  METH_VARARGS|METH_KEYWORDS, tablePrivileges_doc  },
     { "columns",          (PyCFunction)Cursor_columns,          METH_VARARGS|METH_KEYWORDS, columns_doc          },
     { "statistics",       (PyCFunction)Cursor_statistics,       METH_VARARGS|METH_KEYWORDS, statistics_doc       },
     { "rowIdColumns",     (PyCFunction)Cursor_rowIdColumns,     METH_VARARGS|METH_KEYWORDS, rowIdColumns_doc     },
