@@ -350,8 +350,27 @@ static PyObject* GetDataUser(Cursor* cur, Py_ssize_t iCol, PyObject* func)
     return result;
 }
 
+static PyObject* GetDataDecimalBinary(Cursor* cur, Py_ssize_t iCol)
+{
+    SQL_NUMERIC_STRUCT numStruct;
+    SQLLEN cbFetched = 0;
+    SQLRETURN ret;
+    SQLUSMALLINT i = (SQLUSMALLINT)(iCol + 1);
 
-static PyObject* GetDataDecimal(Cursor* cur, Py_ssize_t iCol)
+    Py_BEGIN_ALLOW_THREADS
+    ret = SQLGetData(cur->hstmt, i, SQL_ARD_TYPE, &numStruct, sizeof(numStruct), &cbFetched);
+    Py_END_ALLOW_THREADS
+
+    if (!SQL_SUCCEEDED(ret))
+        return NULL;  // no Python exception — caller falls back to string path
+
+    if (cbFetched == SQL_NULL_DATA)
+        Py_RETURN_NONE;
+
+    return DecimalFromNumericStruct(numStruct);
+}
+
+static PyObject* GetDataDecimalString(Cursor* cur, Py_ssize_t iCol)
 {
     // The SQL_NUMERIC_STRUCT support is hopeless (SQL Server ignores scale on input parameters
     // and output columns, Oracle does something else weird, and many drivers don't support it
@@ -749,12 +768,22 @@ PyObject* GetData(Cursor* cur, Py_ssize_t iCol)
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
+    case SQL_DB2_BLOB:
         return GetBinary(cur, iCol);
 
     case SQL_DECIMAL:
     case SQL_NUMERIC:
     case SQL_DB2_DECFLOAT:
-        return GetDataDecimal(cur, iCol);
+        if (cur->colinfos[iCol].use_decimal_binary)
+        {
+            PyObject* obj = GetDataDecimalBinary(cur, iCol);
+            if (obj != NULL)
+                return obj;
+            if (PyErr_Occurred())
+                return NULL;
+            // SQLGetData failed without a Python exception — fall through.
+        }
+        return GetDataDecimalString(cur, iCol);
 
     case SQL_BIT:
         return GetDataBit(cur, iCol);

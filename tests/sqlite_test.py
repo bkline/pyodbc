@@ -16,6 +16,7 @@ Then run the unit tests with:
 python -m pytest tests/sqlite_test.py
 """
 
+import ctypes
 import os
 import pathlib
 import pickle
@@ -731,3 +732,27 @@ def test_pickling(cnxn: pyodbc.Connection):
     pickled_rows = pickle.dumps(original_rows)
     unpickled_rows = pickle.loads(pickled_rows)
     assert unpickled_rows == original_rows
+
+    # pickling works for rows with duplicate column names
+    original_rows = crsr.execute("select n, s, s from t1").fetchall()
+    pickled_rows = pickle.dumps(original_rows)
+    unpickled_rows = pickle.loads(pickled_rows)
+    assert unpickled_rows == original_rows
+
+
+def test_handles(cursor: pyodbc.Cursor):
+    """Test the exposed native ODBC handles"""
+
+    conn = cursor.connection
+    for handle in (pyodbc.henv, conn.hdbc, cursor.hstmt):
+        assert isinstance(handle, ctypes.c_void_p)
+        with pytest.raises(TypeError):
+            if handle > 42:
+                print("we should never get here")
+    cursor.close()
+    assert not isinstance(cursor.hstmt, ctypes.c_void_p)
+    assert cursor.hstmt is None
+    assert isinstance(conn.hdbc, ctypes.c_void_p)
+    conn.close()
+    assert not isinstance(conn.hdbc, ctypes.c_void_p)
+    assert conn.hdbc is None

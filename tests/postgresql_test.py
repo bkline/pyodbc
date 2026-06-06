@@ -3,6 +3,7 @@ Unit tests for PostgreSQL
 """
 # -*- coding: utf-8 -*-
 
+import ctypes
 import os, uuid
 from decimal import Decimal
 from typing import Iterator
@@ -171,11 +172,13 @@ def test_decimal(cursor: pyodbc.Cursor):
     params = [Decimal(n) for n in "-1000.10 -1234.56 -1 0 1 1000.10 1234.56 100010 123456789.21".split()]
     params.append(None)
 
-    for param in params:
-        cursor.execute("truncate table t1")
-        cursor.execute("insert into t1 values (?)", param)
-        result = cursor.execute("select col from t1").fetchval()
-        assert result == param
+    for mode in (True, False):
+        cursor.connection.fetch_decimal_as_string = mode
+        for param in params:
+            cursor.execute("truncate table t1")
+            cursor.execute("insert into t1 values (?)", param)
+            result = cursor.execute("select col from t1").fetchval()
+            assert result == param
 
 
 def test_numeric(cursor: pyodbc.Cursor):
@@ -185,11 +188,13 @@ def test_numeric(cursor: pyodbc.Cursor):
     params = [Decimal(n) for n in "-1234.56  -1  0  1  1234.56  123456789.21".split()]
     params.append(None)
 
-    for param in params:
-        cursor.execute("truncate table t1")
-        cursor.execute("insert into t1 values (?)", param)
-        result = cursor.execute("select col from t1").fetchval()
-        assert result == param
+    for mode in (True, False):
+        cursor.connection.fetch_decimal_as_string = mode
+        for param in params:
+            cursor.execute("truncate table t1")
+            cursor.execute("insert into t1 values (?)", param)
+            result = cursor.execute("select col from t1").fetchval()
+            assert result == param
 
 
 def test_maxwrite(cursor: pyodbc.Cursor):
@@ -494,6 +499,20 @@ def test_columns(cursor: pyodbc.Cursor):
     assert row.type_name == 'varchar'
     assert _get_column_size(row) == 3
 
+
+def test_table_privileges(cursor: pyodbc.Cursor):
+    # Confirm exposure of SQLTablePrivileges.  We're limited in what we can test, as
+    # we can't control whether we're running with permission to create users or grant
+    # permissions.  We can at least verify that the method generates a results set
+    # with the right columns.
+    cols = ["table_cat", "table_schem", "table_name", "grantor",
+            "grantee", "privilege", "is_grantable"]
+    cursor.tablePrivileges()
+    names = [col[0] for col in cursor.description]
+    assert len(cols) == len(names), "privileges results set has the wrong shape"
+    assert cols == names, "unexpected column names for privileges results set"
+
+
 def test_cancel(cursor: pyodbc.Cursor):
     # I'm not sure how to reliably cause a hang to cancel, so for now we'll settle with
     # making sure SQLCancel is called correctly.
@@ -624,3 +643,21 @@ def test_refcount_encoding():
     count_after = sys.getrefcount(encoding)
 
     assert count_after == count_before
+
+
+def test_handles(cursor: pyodbc.Cursor):
+    """Test the exposed native ODBC handles"""
+
+    conn = cursor.connection
+    for handle in (pyodbc.henv, conn.hdbc, cursor.hstmt):
+        assert isinstance(handle, ctypes.c_void_p)
+        with pytest.raises(TypeError):
+            if handle > 42:
+                print("we should never get here")
+    cursor.close()
+    assert not isinstance(cursor.hstmt, ctypes.c_void_p)
+    assert cursor.hstmt is None
+    assert isinstance(conn.hdbc, ctypes.c_void_p)
+    conn.close()
+    assert not isinstance(conn.hdbc, ctypes.c_void_p)
+    assert conn.hdbc is None
