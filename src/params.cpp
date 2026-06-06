@@ -537,8 +537,12 @@ static void FreeInfos(ParamInfo* a, Py_ssize_t count)
 
 static bool GetNullInfo(Cursor* cur, Py_ssize_t index, ParamInfo& info, bool isTVP)
 {
+    // GetParamType won't work for TVP columns, so we fall back on SQL_VARCHAR.
     if (isTVP)
-        info.ParameterType = SQL_VARCHAR;
+    {
+        if (info.ParameterType == SQL_UNKNOWN_TYPE)
+            info.ParameterType = SQL_VARCHAR;
+    }
     else if (!GetParamType(cur, index, info.ParameterType))
         return false;
 
