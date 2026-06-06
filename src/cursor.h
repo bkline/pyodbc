@@ -31,6 +31,13 @@ struct ColumnInfo
     // of the integer types are the same size whether signed and unsigned, so we can allocate memory ahead of time
     // without knowing this.  We use this during the fetch when converting to a Python integer or long.
     bool is_unsigned;
+
+    // For SQL_DECIMAL/SQL_NUMERIC columns: scale from SQLDescribeCol, and whether
+    // the binary (SQL_C_NUMERIC) fetch path can be used for this column.
+    // use_decimal_binary is false if scale is outside [0, 127] (doesn't fit in
+    // SQL_NUMERIC_STRUCT.scale or is negative) or if the driver failed ARD setup.
+    SQLSMALLINT scale;
+    bool use_decimal_binary;
 };
 
 struct ParamInfo
