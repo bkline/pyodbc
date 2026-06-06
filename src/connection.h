@@ -87,6 +87,11 @@ struct Connection
 
     bool need_long_data_len;
 
+    // Flag for drivers which report the number of bytes in the returned diagnostic message
+    // from a call to SQLGetDiagRecW() rather than the number of characters, as required
+    // by ODBC. See https://github.com/mkleehammer/pyodbc/issues/489.
+    bool compat_diagrec_byte_length;
+
     PyObject* map_sqltype_to_converter;
     // If converters are defined, this will be a dictionary mapping from the SQLTYPE cast to an
     // int (because types can be negative) to the converter function.
@@ -104,7 +109,7 @@ struct Connection
  * exception is set and zero is returned.
  */
 PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeout, bool fReadOnly,
-                         PyObject* attrs_before, PyObject* encoding);
+                         PyObject* attrs_before, PyObject* encoding, SQLUSMALLINT driver_completion);
 
 /*
  * Used by the Cursor to implement commit and rollback.

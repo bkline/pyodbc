@@ -602,6 +602,9 @@ int GetDiagRecs(Cursor* cur)
     if (!msg_list)
         return 0;
 
+    // See https://github.com/mkleehammer/pyodbc/issues/489
+    bool text_length_in_bytes = cur->cnxn->compat_diagrec_byte_length;
+
     for (;;)
     {
         cSQLState[0]    = 0;
@@ -617,6 +620,10 @@ int GetDiagRecs(Cursor* cur)
         Py_END_ALLOW_THREADS
         if (!SQL_SUCCEEDED(ret))
             break;
+
+        // Make sure the text length counts characters, not bytes.
+        if (text_length_in_bytes)
+            iTextLength /= sizeof(uint16_t);
 
         // If needed, allocate a bigger error message buffer and retry.
         if (iTextLength > iMessageLen - 1) {
@@ -634,6 +641,8 @@ int GetDiagRecs(Cursor* cur)
             Py_END_ALLOW_THREADS
             if (!SQL_SUCCEEDED(ret))
                 break;
+            if (text_length_in_bytes)
+                iTextLength /= sizeof(uint16_t);
         }
 
         cSQLState[5] = 0;  // Not always NULL terminated (MS Access)
@@ -901,6 +910,9 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
         }
     }
 
+    if (ret == SQL_SUCCESS_WITH_INFO)
+        GetDiagRecs(cur);
+
     FreeParameterData(cur);
 
     if (ret == SQL_NO_DATA)
@@ -1134,7 +1146,7 @@ static PyObject* Cursor_setinputsizes(PyObject* self, PyObject* sizes)
         PyErr_SetString(ProgrammingError, "Invalid cursor object.");
         return 0;
     }
-    
+
     Cursor *cur = (Cursor*)self;
     if (Py_None == sizes)
     {
@@ -1666,17 +1678,19 @@ char* Cursor_statistics_kwnames[] = { "table", "catalog", "schema", "unique", "q
 
 static PyObject* Cursor_statistics(PyObject* self, PyObject* args, PyObject* kwargs)
 {
-    const char* szCatalog = 0;
-    const char* szSchema  = 0;
-    const char* szTable   = 0;
+    PyObject* pCatalog = 0;
+    PyObject* pSchema  = 0;
+    PyObject* pTable   = 0;
     PyObject* pUnique = Py_False;
     PyObject* pQuick  = Py_True;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|zzOO", Cursor_statistics_kwnames, &szTable, &szCatalog, &szSchema,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|OOOO", Cursor_statistics_kwnames, &pTable, &pCatalog, &pSchema,
                                      &pUnique, &pQuick))
         return 0;
 
     Cursor* cur = Cursor_Validate(self, CURSOR_REQUIRE_OPEN);
+    if (!cur)
+        return 0;
 
     if (!free_results(cur, FREE_STATEMENT | FREE_PREPARED))
         return 0;
@@ -1684,11 +1698,74 @@ static PyObject* Cursor_statistics(PyObject* self, PyObject* args, PyObject* kwa
     SQLUSMALLINT nUnique   = (SQLUSMALLINT)(PyObject_IsTrue(pUnique) ? SQL_INDEX_UNIQUE : SQL_INDEX_ALL);
     SQLUSMALLINT nReserved = (SQLUSMALLINT)(PyObject_IsTrue(pQuick)  ? SQL_QUICK : SQL_ENSURE);
 
+    // Use the cursor's encoding.
+    const TextEnc* penc = &cur->cnxn->unicode_enc;
+    bool isWide = penc->ctype == SQL_C_WCHAR;
+    Object oTable;
+    Object oCatalog;
+    Object oSchema;
+    if (pTable && pTable != Py_None)
+    {
+        oTable = penc->Encode(pTable);
+        if (!oTable)
+            return 0;
+    }
+    if (pCatalog && pCatalog != Py_None)
+    {
+        oCatalog = penc->Encode(pCatalog);
+        if (!oCatalog)
+            return 0;
+    }
+    if (pSchema && pSchema != Py_None)
+    {
+        oSchema = penc->Encode(pSchema);
+        if (!oSchema)
+            return 0;
+    }
+    char* szTable = 0;
+    SQLSMALLINT cchTable = SQL_NTS;
+    if (oTable)
+    {
+        szTable = PyBytes_AS_STRING(oTable.Get());
+        if (isWide)
+            cchTable = (SQLSMALLINT)(PyBytes_GET_SIZE(oTable.Get()) / sizeof(uint16_t));
+    }
+    char* szCatalog = 0;
+    SQLSMALLINT cchCatalog = SQL_NTS;
+    if (oCatalog)
+    {
+        szCatalog = PyBytes_AS_STRING(oCatalog.Get());
+        if (isWide)
+            cchCatalog = (SQLSMALLINT)(PyBytes_GET_SIZE(oCatalog.Get()) / sizeof(uint16_t));
+    }
+    char* szSchema = 0;
+    SQLSMALLINT cchSchema = SQL_NTS;
+    if (oSchema)
+    {
+        szSchema = PyBytes_AS_STRING(oSchema.Get());
+        if (isWide)
+            cchSchema = (SQLSMALLINT)(PyBytes_GET_SIZE(oSchema.Get()) / sizeof(uint16_t));
+    }
+
     SQLRETURN ret = 0;
 
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLStatistics(cur->hstmt, (SQLCHAR*)szCatalog, SQL_NTS, (SQLCHAR*)szSchema, SQL_NTS, (SQLCHAR*)szTable, SQL_NTS,
-                        nUnique, nReserved);
+    if (isWide)
+        ret = SQLStatisticsW(
+            cur->hstmt,
+            (SQLWCHAR*)szCatalog, cchCatalog,
+            (SQLWCHAR*)szSchema, cchSchema,
+            (SQLWCHAR*)szTable, cchTable,
+            nUnique, nReserved
+        );
+    else
+        ret = SQLStatistics(
+            cur->hstmt,
+            (SQLCHAR*)szCatalog, cchCatalog,
+            (SQLCHAR*)szSchema, cchSchema,
+            (SQLCHAR*)szTable, cchTable,
+            nUnique, nReserved
+        );
     Py_END_ALLOW_THREADS
 
     if (!SQL_SUCCEEDED(ret))
@@ -2422,9 +2499,27 @@ static int Cursor_setnoscan(PyObject* self, PyObject* value, void *closure)
     return 0;
 }
 
+static PyObject* Cursor_gethstmt(PyObject* self, void* closure)
+{
+    UNUSED(closure);
+
+    // My first thought was to call Cursor_Validate() without the
+    // CURSOR_REQUIRE_OPEN flag, but apparently the semantics for
+    // that function's flags are not what I expected.
+    if (!Cursor_Check(self))
+    {
+        PyErr_SetString(PyExc_TypeError, "Cursor object required");
+        return nullptr;
+    }
+
+    Cursor* cur = (Cursor*)self;
+    return MakeVoidPointerFromHandle(cur->hstmt);
+}
+
 static PyGetSetDef Cursor_getsetters[] =
 {
     {"noscan", Cursor_getnoscan, Cursor_setnoscan, "NOSCAN statement attr", 0},
+    {"hstmt",  Cursor_gethstmt,  0,                "ODBC statement handle", 0},
     { 0 }
 };
 
