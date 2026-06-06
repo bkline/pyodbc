@@ -2,6 +2,7 @@
 # ruff: noqa: DTZ001, DTZ005, DTZ011
 
 import ctypes
+import gc
 import os
 import re
 import uuid
@@ -33,8 +34,8 @@ def connect(autocommit=False, attrs_before=None):
 
 
 DRIVER = connect().getinfo(pyodbc.SQL_DRIVER_NAME)
-
-IS_FREEDTS   = bool(re.search(r'tsodbc', DRIVER, flags=re.IGNORECASE))
+DRIVER_VERSION = tuple(int(n) for n in connect().getinfo(pyodbc.SQL_DRIVER_VER).split("."))
+IS_FREETDS   = bool(re.search(r'(tsodbc|tdsodbc)', DRIVER, flags=re.IGNORECASE))
 IS_MSODBCSQL = bool(re.search(r'(msodbcsql|sqlncli|sqlsrv32\.dll)', DRIVER, re.IGNORECASE))
 
 
@@ -136,6 +137,14 @@ def test_non_numeric_float(cursor: pyodbc.Cursor):
     for value in (float('+Infinity'), float('-Infinity'), float('NaN')):
         with pytest.raises(pyodbc.ProgrammingError):
             cursor.execute("insert into t1 values (?)", value)
+    if IS_FREETDS:
+        # Give the driver a chance to unconfuse itself. Without creating and closing
+        # this second connection, this test will pass, but the next test in the queue
+        # depending on the cursor-generator fixture will fail when that fixture tries
+        # to commit the "DROP TABLE IF EXISTS…" statements, triggering an exception.
+        # For details refer to https://github.com/FreeTDS/freetds/issues/718.
+        conn2 = connect()
+        conn2.close()
 
 
 def test_drivers():
@@ -224,6 +233,9 @@ LARGE_FENCEPOST_SIZES = SMALL_FENCEPOST_SIZES + [4095, 4096, 4097, 10 * 1024, 20
 
 def _test_vartype(cursor: pyodbc.Cursor, datatype):
 
+    is_binary = datatype in {"blob", "varbinary"}
+    encoding = "utf8" if is_binary else None
+
     if datatype == 'text':
         lengths = LARGE_FENCEPOST_SIZES
     else:
@@ -236,15 +248,26 @@ def _test_vartype(cursor: pyodbc.Cursor, datatype):
         cursor.execute(f"create table t1(c1 {datatype}({maxlen}))")
 
     for length in lengths:
+
+        # FreeTDS did not support SQLDescribeParam until version 1.5.16 (see ticket
+        # https://github.com/FreeTDS/freetds/issues/104), so pyodbc had to infer the
+        # SQL type from the Python value. None carries no type information, causing
+        # pyodbc to fall back to SQL_VARCHAR, which SQL Server rejects for binary
+        # columns.
+        if length is None and IS_FREETDS and is_binary and DRIVER_VERSION < (1, 5, 16):
+            continue
+
         cursor.execute("delete from t1")
 
-        encoding = 'utf8' if datatype in {'blob', 'varbinary'} else None
         value = _generate_str(length, encoding=encoding)
 
         try:
             cursor.execute("insert into t1 values(?)", value)
         except pyodbc.Error as ex:
-            msg = f'{datatype} insert failed: length={length} len={len(value)}'
+            if value is None:
+                msg = f"{datatype} insert of NULL failed"
+            else:
+                msg = f'{datatype} insert failed: length={length} len={len(value)}'
             raise Exception(msg) from ex
 
         v = cursor.execute("select * from t1").fetchone()[0]
@@ -270,27 +293,34 @@ def test_noscan(cursor: pyodbc.Cursor):
 
 
 def test_nonnative_uuid(cursor: pyodbc.Cursor):
-    # The default is False meaning we should return a string.  Note that
-    # SQL Server seems to always return uppercase.
+    # Resetting the native_uuid flag should force return of a text value.
+    # Note that SQL Server seems to always return uppercase.
     value = uuid.uuid4()
     cursor.execute("create table t1(n uniqueidentifier)")
     cursor.execute("insert into t1 values (?)", value)
 
-    pyodbc.native_uuid = False
-    result = cursor.execute("select n from t1").fetchval()
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = False
+        result = cursor.execute("select n from t1").fetchval()
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
     assert isinstance(result, str)
     assert result == str(value).upper()
-    pyodbc.native_uuid = True
 
 
 def test_native_uuid(cursor: pyodbc.Cursor):
-    # When true, we should return a uuid.UUID object.
+    # With the native_uuid flag set we should get a uuid.UUID object.
     value = uuid.uuid4()
     cursor.execute("create table t1(n uniqueidentifier)")
     cursor.execute("insert into t1 values (?)", value)
 
-    pyodbc.native_uuid = True
-    result = cursor.execute("select n from t1").fetchval()
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = True
+        result = cursor.execute("select n from t1").fetchval()
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
     assert isinstance(result, uuid.UUID)
     assert value == result
 
@@ -315,7 +345,7 @@ def test_nextset(cursor: pyodbc.Cursor):
         assert i + 2 == row.i
 
 
-@pytest.mark.skipif(IS_FREEDTS, reason='https://github.com/FreeTDS/freetds/issues/230')
+@pytest.mark.skipif(IS_FREETDS, reason='https://github.com/FreeTDS/freetds/issues/230')
 def test_nextset_with_raiserror(cursor: pyodbc.Cursor):
     cursor.execute("select i = 1; RAISERROR('c', 16, 1);")
     row = next(cursor)
@@ -675,7 +705,11 @@ def test_sp_with_none(cursor: pyodbc.Cursor):
 
 
 def test_rowcount_delete(cursor: pyodbc.Cursor):
-    assert cursor.rowcount == -1
+    # After DDL (DROP TABLE), rowcount is driver-defined per the ODBC spec.
+    # Microsoft's driver might reliably return -1 here, but that's not true
+    # for FreeTDS.
+    if IS_MSODBCSQL:
+        assert cursor.rowcount == -1
     cursor.execute("create table t1(i int)")
     count = 4
     for i in range(count):
@@ -727,7 +761,7 @@ def test_rowcount_reset(cursor: pyodbc.Cursor):
     assert cursor.rowcount == 1
 
     cursor.execute("create table t2(i int)")
-    ddl_rowcount = (0 if IS_FREEDTS else -1)
+    ddl_rowcount = (0 if IS_FREETDS else -1)
     assert cursor.rowcount == ddl_rowcount
 
 
@@ -1099,7 +1133,15 @@ def test_cursor_messages_with_print(cursor: pyodbc.Cursor):
     assert len(messages) == 1
     assert messages[0][1].endswith(msg)
 
+    # Confirm that the PRINT message is captured when DAE kicks in.
+    # https://github.com/mkleehammer/pyodbc/issues/1140
+    cursor.execute("PRINT 'HI!'; SELECT ?", "x" * 2001)
+    assert len(cursor.messages) == 1
+    assert cursor.messages[0][1].endswith("HI!")
 
+
+@pytest.mark.skipif(IS_FREETDS and DRIVER_VERSION < (1, 5, 15),
+                    reason="FreeTDS ignores bind offset")
 def test_cursor_messages_with_fast_executemany(cursor: pyodbc.Cursor):
     """
     Ensure the Cursor.messages attribute is set with fast_executemany=True.
@@ -1190,7 +1232,7 @@ def test_none_param(cursor: pyodbc.Cursor):
     try:
         cursor.execute(sql, 2, None)
     except pyodbc.DataError:
-        if IS_FREEDTS:
+        if IS_FREETDS:
             # cnxn.getinfo(pyodbc.SQL_DESCRIBE_PARAMETER) returns False for FreeTDS, so pyodbc
             # can't call SQLDescribeParam to get the correct parameter type.  This can lead to
             # errors being returned from SQL Server when sp_prepexec is called, e.g., "Implicit
@@ -1427,6 +1469,31 @@ def test_columns(cursor: pyodbc.Cursor):
         cursor.execute(f"drop table {table_name}")
 
 
+@pytest.mark.skipif(IS_FREETDS, reason="FreeTDS Unicode handling for catalog functions is unreliable")
+def test_statistics_unicode():
+    # https://github.com/mkleehammer/pyodbc/issues/1457
+    # statistics() passed the table name straight to the ANSI SQLStatistics, mis-encoding a
+    # non-ASCII name so the driver matched nothing and returned no rows.  The failure is
+    # masked on a *reused* pooled connection -- it only shows on a fresh physical connection
+    # -- which is why a plain test in the suite doesn't reliably catch it.  Force a fresh
+    # connection with a unique APP= (pooling keys on the connection string), plus a unique
+    # table name for good measure.
+    suffix = uuid.uuid4().hex
+    name = "ランドマーク_" + suffix
+    cnxn = pyodbc.connect(CNXNSTR + f";APP=pyodbc_1457_{suffix}", autocommit=True)
+    cur = cnxn.cursor()
+    cur.execute(f"CREATE TABLE [{name}] (id INT PRIMARY KEY, foo INT)")
+    cur.execute(f"CREATE INDEX ix_foo ON [{name}] (foo)")
+    try:
+        # index_name is column 5 of the SQLStatistics result set
+        index_names = {row[5] for row in cur.statistics(name).fetchall() if row[5] is not None}
+        assert "ix_foo" in index_names, \
+            f"statistics() returned no index info for a Unicode table name; got {index_names}"
+    finally:
+        cur.execute(f"IF OBJECT_ID(N'[{name}]', N'U') IS NOT NULL DROP TABLE [{name}]")
+        cnxn.close()
+
+
 def test_cancel(cursor: pyodbc.Cursor):
     # I'm not sure how to reliably cause a hang to cancel, so for now we'll settle with
     # making sure SQLCancel is called correctly.
@@ -1488,9 +1555,6 @@ def _test_tvp(cursor: pyodbc.Cursor, diff_schema):
     # not sure I like that as it is very generic and specific to SQL Server.  It would be wiser
     # to define a wrapper pyodbc.TVP or pyodbc.Table object, similar to the DB APIs `Binary`
     # object.
-
-    pyodbc.native_uuid = True
-    # This is the default, but we'll reset it in case a previous test fails to.
 
     procname = 'SelectTVP'
     typename = 'TestTVP'
@@ -1587,7 +1651,13 @@ def _test_tvp(cursor: pyodbc.Cursor, diff_schema):
         p1 = [[typenameonly, schemaname] + params]
     else:
         p1 = [params]
-    result_array = [tuple(row) for row in cursor.execute(f"exec {procname} ?", p1).fetchall()]
+
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = True
+        result_array = [tuple(row) for row in cursor.execute(f"exec {procname} ?", p1).fetchall()]
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
 
     # The values make it very difficult to troubleshoot if something is wrong, so instead of
     # asserting they are the same, we'll walk them if there is a problem to identify which is
@@ -1609,14 +1679,61 @@ def _test_tvp(cursor: pyodbc.Cursor, diff_schema):
     assert result_array == params
 
 
-@pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
+@pytest.mark.skipif(IS_FREETDS, reason='FreeTDS does not support TVP')
 def test_tvp(cursor: pyodbc.Cursor):
     _test_tvp(cursor, False)
 
 
-@pytest.mark.skipif(IS_FREEDTS, reason='FreeTDS does not support TVP')
+@pytest.mark.skipif(IS_FREETDS, reason='FreeTDS does not support TVP')
 def test_tvp_diffschema(cursor: pyodbc.Cursor):
     _test_tvp(cursor, True)
+
+
+def _test_tvp_with_nulls_cleanup(cursor: pyodbc.Cursor, procname: str, typename: str):
+    """Leave the forest as pristine as you found it."""
+
+    cursor.execute(f"""\
+        IF OBJECT_ID(N'dbo.{procname}', N'P') IS NOT NULL
+        DROP PROCEDURE dbo.{procname};
+    """)
+    cursor.execute(f"""
+        IF TYPE_ID(N'dbo.{typename}') IS NOT NULL
+            DROP TYPE dbo.{typename};
+    """)
+
+
+@pytest.mark.skipif(SQLSERVER_YEAR < 2008, reason="TVP not supported until 2008")
+@pytest.mark.skipif(IS_FREETDS, reason="FreeTDS does not support TVP")
+def test_tvp_with_nulls(cursor: pyodbc.Cursor):
+    """Make sure NULL values in a TVP don't crash the interpreter."""
+
+    # Start with a clean slate.
+    typename = "typeTestNullsInTVP"
+    procname = "spTestNullsInTVP"
+    _test_tvp_with_nulls_cleanup(cursor, procname, typename)
+
+    # Create the custom type and stored procedure.
+    ncols = 100
+    cols = ", ".join([f"col_{c:03d} DECIMAL(36,20)" for c in range(1, ncols+1)])
+    cursor.execute(f"CREATE TYPE dbo.{typename} AS TABLE ({cols})")
+    cursor.execute(f"""\
+        CREATE PROCEDURE dbo.{procname}
+            @data dbo.{typename} READONLY
+        AS
+        BEGIN
+            RETURN 0;
+        END;
+    """)
+    cursor.commit()
+
+    # Invoke the stored procedure.
+    tvp: list[list] = [[3.14159] * ncols, [None] * ncols]
+    cursor.execute(f"EXEC [dbo].{procname} @data=?", [tvp])
+    gc.collect()
+
+    # Be a good digital citizen.
+    _test_tvp_with_nulls_cleanup(cursor, procname, typename)
+    cursor.commit()
 
 
 @pytest.mark.skipif(SQLSERVER_YEAR < 2000, reason='sql_variant not supported until 2000')
@@ -1638,8 +1755,15 @@ def test_sql_variant(cursor: pyodbc.Cursor):
         "insert into t1 values (CAST('0592b437-745f-4b2c-a997-97022c624cf6' AS UNIQUEIDENTIFIER))"
     )
 
-    # select all of the values we inserted and ensure they have the correct types
-    results = [record[0] for record in cursor.execute("select a from t1").fetchall()]
+    # Expected behavior depends on this flag being set.
+    saved_native_uuid = pyodbc.native_uuid
+    try:
+        pyodbc.native_uuid = True
+        results = [record[0] for record in cursor.execute("select a from t1").fetchall()]
+    finally:
+        pyodbc.native_uuid = saved_native_uuid
+
+    # Ensure all of the fetched values have the expected types.
     for index, assertion_tuple in enumerate(
         [
             (Decimal, Decimal("456.7")),
@@ -1719,3 +1843,15 @@ def _generate_str(length, encoding=None):
     v = v[:length]
 
     return v
+
+
+def test_set_string_attr(cursor: pyodbc.Cursor):
+    """Confirm that set_attr() now accepts string values.
+
+    See https://github.com/mkleehammer/pyodbc/issues/505
+    """
+    original_db = cursor.execute("SELECT db_name()").fetchval()
+    assert original_db != "master"
+    cursor.connection.set_attr(pyodbc.SQL_ATTR_CURRENT_CATALOG, "master")
+    new_db = cursor.execute("SELECT db_name()").fetchval()
+    assert new_db == "master"

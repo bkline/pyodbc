@@ -294,6 +294,11 @@ SQL_UNION: int
 SQL_USER_NAME: int
 SQL_XOPEN_CLI_YEAR: int
 
+# driver connect completion modes
+SQL_DRIVER_COMPLETE: int
+SQL_DRIVER_COMPLETE_REQUIRED: int
+SQL_DRIVER_NOPROMPT: int
+SQL_DRIVER_PROMPT: int
 
 # pyodbc-specific constants
 BinaryNull: Any  # to distinguish binary NULL values from char NULL values
@@ -359,6 +364,18 @@ class Connection:
     @property
     def hdbc(self) -> ctypes.c_void_p | None:
         """ODBC handle for the connection."""
+        ...
+
+    @property
+    def compat_diagrec_byte_length(self) -> bool:
+        """Set to True if the driver incorrectly reports byte length instead of
+        character length for diagnostic messages.
+
+        See https://github.com/mkleehammer/pyodbc/issues/489."""
+        ...
+
+    @compat_diagrec_byte_length.setter
+    def compat_diagrec_byte_length(self, value: bool) -> None:
         ...
 
     @property
@@ -433,7 +450,7 @@ class Connection:
         """
         ...
 
-    def set_attr(self, attr_id: int, value: int, /) -> None:
+    def set_attr(self, attr_id: int, value: int | str, /) -> None:
         """Set an attribute on the connection, via SQLSetConnectAttr.
 
         Args:
@@ -956,9 +973,12 @@ class Row:
 
 # module functions
 
-def dataSources() -> dict[str, str]:
+def dataSources(*, scope: str | None = None) -> dict[str, str]:
     """Return all available Data Source Names (DSNs), typically from the odbcinst.ini file
     or the Windows ODBC Data Source Administrator.
+
+    Args:
+        scope: optional filter ("user" or "system") to control which DSNs are returned.
 
     Returns:
         A dictionary of DSNs and their textual descriptions.
@@ -1010,6 +1030,9 @@ def connect(connstring: str | None = None,
         readonly: To set the connection read-only.  Not all drivers and/or databases support this.
         timeout: Set the connection timeout, in seconds.  This is managed by the driver, not
             pyodbc, and not all drivers support this.
+        driver_completion: One of SQL_DRIVER_PROMPT (only available on Windows),
+            SQL_DRIVER_NO_PROMPT (the default), SQL_DRIVER_COMPLETE, or
+            SQL_DRIVER_COMPLETE_REQUIRED.
         attrs_before: Set low-level connection attributes before a connection is attempted.
         **kwargs: These key/value pairs are used to construct the connection string, or add
             to it (as "key=value;" combinations).
