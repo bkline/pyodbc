@@ -774,10 +774,10 @@ class Cursor:
         """
         ...
 
-    def tablesPrivileges(self,
-                         table: str | None = None,
-                         catalog: str | None = None,
-                         schema: str | None = None) -> Cursor:
+    def tablePrivileges(self,
+                        table: str | None = None,
+                        catalog: str | None = None,
+                        schema: str | None = None) -> Cursor:
         """Return information about privileges granted for the tables in the
         database.
 
