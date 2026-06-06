@@ -726,3 +726,9 @@ def test_pickling(cnxn: pyodbc.Connection):
     pickled_rows = pickle.dumps(original_rows)
     unpickled_rows = pickle.loads(pickled_rows)
     assert unpickled_rows == original_rows
+
+    # pickling works for rows with duplicate column names
+    original_rows = crsr.execute("select n, s, s from t1").fetchall()
+    pickled_rows = pickle.dumps(original_rows)
+    unpickled_rows = pickle.loads(pickled_rows)
+    assert unpickled_rows == original_rows

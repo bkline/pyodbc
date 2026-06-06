@@ -311,7 +311,7 @@ static bool AllocateEnv()
         }
     }
     Py_DECREF(odbcversion);
-    
+
     if (!SQL_SUCCEEDED(SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, defaultVersion, sizeof(int))))
     {
         PyErr_SetString(PyExc_RuntimeError, "Unable to set SQL_ATTR_ODBC_VERSION attribute.");
@@ -1176,7 +1176,7 @@ PyMODINIT_FUNC PyInit_pyodbc()
     if (!module || !import_types() || !CreateExceptions())
         return 0;
 
-    const char* szVersion = TOSTRING(PYODBC_VERSION);
+    const char* szVersion = Py_STRINGIFY(PYODBC_VERSION);
     PyModule_AddStringConstant(module, "version", (char*)szVersion);
 
     PyModule_AddIntConstant(module, "threadsafety", 1);
